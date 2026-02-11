@@ -1,6 +1,8 @@
 {
   "collection_enabled": true,
-  "master_url": "http://localhost:8085/api/v1/submit_data",
+  "master_url": "http://localhost:8085",
+  "api_key": "",
+  "bundle_level": "L1",
   "log_paths": [
     "/var/log/hadoop/*",
     "/var/log/hive/*",

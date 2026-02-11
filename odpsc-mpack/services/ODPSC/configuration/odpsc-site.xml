@@ -55,10 +55,20 @@
   <property>
     <name>hdfs_path</name>
     <value>/odpsc/diagnostics</value>
-    <description>Chemin HDFS pour le stockage des bundles en mode manuel.</description>
-    <display-name>HDFS Output Path</display-name>
+    <description>Chemin HDFS pour l'archivage optionnel des bundles.</description>
+    <display-name>HDFS Archive Path</display-name>
     <value-attributes>
       <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>hdfs_archive_enabled</name>
+    <value>false</value>
+    <description>Active l'archivage optionnel des bundles vers HDFS. Le stockage local reste le stockage primaire.</description>
+    <display-name>HDFS Archive Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
     </value-attributes>
   </property>
 
@@ -87,7 +97,7 @@
   <property>
     <name>admin_username</name>
     <value>admin</value>
-    <description>Nom d'utilisateur pour l'authentification Basic Auth de l'API.</description>
+    <description>Nom d'utilisateur pour l'authentification Basic Auth de l'API de gestion.</description>
     <display-name>Admin Username</display-name>
     <value-attributes>
       <type>string</type>
@@ -96,8 +106,8 @@
 
   <property>
     <name>admin_password</name>
-    <value>admin</value>
-    <description>Mot de passe pour l'authentification Basic Auth de l'API.</description>
+    <value></value>
+    <description>Mot de passe pour l'authentification Basic Auth de l'API de gestion. Haché avec bcrypt.</description>
     <display-name>Admin Password</display-name>
     <property-type>PASSWORD</property-type>
     <value-attributes>
@@ -108,7 +118,7 @@
   <property>
     <name>encryption_key</name>
     <value></value>
-    <description>Clé AES-256 pour le chiffrement des bundles locaux (base64). Si vide, une clé est générée automatiquement.</description>
+    <description>Clé pour le chiffrement AES-256-GCM des bundles. Si vide, une clé est générée automatiquement.</description>
     <display-name>Encryption Key</display-name>
     <property-type>PASSWORD</property-type>
     <value-attributes>
@@ -143,7 +153,7 @@
   <property>
     <name>ambari_server_url</name>
     <value>http://localhost:8080</value>
-    <description>URL du serveur Ambari pour la collecte de métriques.</description>
+    <description>URL du serveur Ambari pour la collecte de métriques et le déclenchement des commandes.</description>
     <display-name>Ambari Server URL</display-name>
     <value-attributes>
       <type>string</type>
@@ -157,6 +167,93 @@
     <display-name>Cluster Name</display-name>
     <value-attributes>
       <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>api_key</name>
+    <value></value>
+    <description>Clé API partagée entre agents et master pour l'authentification des uploads de bundles. Générée automatiquement lors de l'installation.</description>
+    <display-name>API Key</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>bundle_level</name>
+    <value>L1</value>
+    <description>Niveau de collecte par défaut. L1: configs+sysinfo, L2: +métriques, L3: +logs.</description>
+    <display-name>Bundle Level</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>tls_enabled</name>
+    <value>false</value>
+    <description>Active le TLS pour le serveur gunicorn du master.</description>
+    <display-name>TLS Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>tls_cert_path</name>
+    <value></value>
+    <description>Chemin vers le certificat TLS (PEM) pour le serveur master.</description>
+    <display-name>TLS Certificate Path</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>tls_key_path</name>
+    <value></value>
+    <description>Chemin vers la clé privée TLS pour le serveur master.</description>
+    <display-name>TLS Key Path</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>max_upload_size_mb</name>
+    <value>100</value>
+    <description>Taille maximale en MB pour un upload de bundle agent.</description>
+    <display-name>Max Upload Size (MB)</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>1</minimum>
+      <maximum>500</maximum>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>max_bundle_size_mb</name>
+    <value>500</value>
+    <description>Taille maximale en MB pour un bundle master agrégé.</description>
+    <display-name>Max Bundle Size (MB)</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>10</minimum>
+      <maximum>2048</maximum>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>gunicorn_workers</name>
+    <value>2</value>
+    <description>Nombre de workers gunicorn pour le serveur master.</description>
+    <display-name>Gunicorn Workers</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>1</minimum>
+      <maximum>16</maximum>
     </value-attributes>
   </property>
 </configuration>

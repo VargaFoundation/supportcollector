@@ -1,10 +1,9 @@
 """
-Ambari lifecycle script for the ODPSC Agent component.
-Handles install, configure, start, stop, and status commands from Ambari.
+Ambari lifecycle script for the ODPSC Agent v2 component.
+Handles install, configure, start, stop, status, and COLLECT custom command.
 """
 
 import os
-import signal
 import subprocess
 import sys
 
@@ -40,21 +39,36 @@ except ImportError:
 RESOURCES_DIR = '/usr/lib/odpsc'
 CONFIG_DIR = '/etc/odpsc'
 LOG_DIR = '/var/log/odpsc'
-PID_FILE = '/var/run/odpsc/agent.pid'
 AGENT_SCRIPT = os.path.join(RESOURCES_DIR, 'odpsc_agent.py')
 CRON_FILE = '/etc/cron.d/odpsc-agent'
+ODPSC_USER = 'odpsc'
+
+# Agent staging directories
+AGENT_BASE_DIR = '/var/lib/odpsc/agent'
+OUTBOX_DIR = os.path.join(AGENT_BASE_DIR, 'outbox')
+SENT_DIR = os.path.join(AGENT_BASE_DIR, 'sent')
+FAILED_DIR = os.path.join(AGENT_BASE_DIR, 'failed')
 
 
 class OdpscAgent(Script):
 
     def install(self, env):
-        Logger.info("Installing ODPSC Agent")
+        Logger.info("Installing ODPSC Agent v2")
+
+        # Create service user
+        try:
+            Execute(f'id -u {ODPSC_USER} || useradd -r -s /sbin/nologin {ODPSC_USER}')
+        except Exception:
+            Logger.info("Service user creation skipped (may already exist)")
 
         # Create directories
-        Directory(RESOURCES_DIR, create_parents=True, owner='root', group='root')
-        Directory(CONFIG_DIR, create_parents=True, owner='root', group='root')
-        Directory(LOG_DIR, create_parents=True, owner='root', group='root')
-        Directory('/var/run/odpsc', create_parents=True, owner='root', group='root')
+        Directory(RESOURCES_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(CONFIG_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(LOG_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(AGENT_BASE_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(OUTBOX_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(SENT_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
+        Directory(FAILED_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
 
         # Install Python dependencies
         Execute('pip3 install requests psutil')
@@ -69,10 +83,10 @@ class OdpscAgent(Script):
             if os.path.exists(src):
                 Execute(f'cp {src} {dst}')
 
-        Logger.info("ODPSC Agent installed successfully")
+        Logger.info("ODPSC Agent v2 installed successfully")
 
     def configure(self, env):
-        Logger.info("Configuring ODPSC Agent")
+        Logger.info("Configuring ODPSC Agent v2")
 
         config = self.get_config()
         odpsc_site = config['configurations'].get('odpsc-site', {})
@@ -88,11 +102,15 @@ class OdpscAgent(Script):
             pass
 
         master_port = odpsc_site.get('master_port', '8085')
+        tls_enabled = odpsc_site.get('tls_enabled', 'false').lower() == 'true'
+        scheme = 'https' if tls_enabled else 'http'
 
         import json
         agent_config = {
             'collection_enabled': odpsc_site.get('collection_enabled', 'true').lower() == 'true',
-            'master_url': f'http://{master_host}:{master_port}/api/v1/submit_data',
+            'master_url': f'{scheme}://{master_host}:{master_port}',
+            'api_key': odpsc_site.get('api_key', ''),
+            'bundle_level': odpsc_site.get('bundle_level', 'L1'),
             'log_paths': json.loads(odpsc_site.get('log_paths', '[]')),
             'config_paths': ['/etc/hadoop/conf/*'],
             'max_log_size_mb': int(odpsc_site.get('max_log_size_mb', 1)),
@@ -102,58 +120,73 @@ class OdpscAgent(Script):
         }
 
         config_path = os.path.join(CONFIG_DIR, 'agent_config.json')
-        File(config_path, content=json.dumps(agent_config, indent=2), owner='root', group='root', mode=0o600)
+        File(config_path, content=json.dumps(agent_config, indent=2),
+             owner=ODPSC_USER, group=ODPSC_USER, mode=0o600)
 
-        # Setup cron job based on frequency
+        # Setup collection cron job based on frequency
         frequency = odpsc_site.get('send_frequency', 'weekly')
         cron_schedule = _get_cron_schedule(frequency)
 
         cron_content = (
-            f"# ODPSC Agent collection schedule\n"
-            f"{cron_schedule} root python3 {AGENT_SCRIPT} >> {LOG_DIR}/agent.log 2>&1\n"
+            f"# ODPSC Agent v2 collection schedule\n"
+            f"{cron_schedule} {ODPSC_USER} python3 {AGENT_SCRIPT} --collect --cleanup "
+            f">> {LOG_DIR}/agent.log 2>&1\n"
+            f"# Retry pending uploads every 15 minutes\n"
+            f"*/15 * * * * {ODPSC_USER} python3 {AGENT_SCRIPT} --retry "
+            f">> {LOG_DIR}/agent.log 2>&1\n"
         )
         File(CRON_FILE, content=cron_content, owner='root', group='root', mode=0o644)
 
-        Logger.info("ODPSC Agent configured")
+        Logger.info("ODPSC Agent v2 configured")
 
     def start(self, env):
-        Logger.info("Starting ODPSC Agent")
+        Logger.info("Starting ODPSC Agent v2")
         self.configure(env)
 
         # Run an initial collection
         Execute(
-            f'nohup python3 {AGENT_SCRIPT} '
-            f'>> {LOG_DIR}/agent.log 2>&1 &',
-            user='root',
+            f'python3 {AGENT_SCRIPT} --collect >> {LOG_DIR}/agent.log 2>&1',
+            user=ODPSC_USER,
         )
 
-        Logger.info("ODPSC Agent started (initial collection triggered)")
+        Logger.info("ODPSC Agent v2 started (initial collection triggered)")
 
     def stop(self, env):
-        Logger.info("Stopping ODPSC Agent")
+        Logger.info("Stopping ODPSC Agent v2")
 
         # Remove cron job
         if os.path.exists(CRON_FILE):
             os.remove(CRON_FILE)
             Logger.info("Removed cron job")
 
-        # Stop running agent process
-        if os.path.exists(PID_FILE):
-            try:
-                with open(PID_FILE, 'r') as f:
-                    pid = int(f.read().strip())
-                os.kill(pid, signal.SIGTERM)
-                Logger.info(f"Sent SIGTERM to PID {pid}")
-            except (ValueError, ProcessLookupError, IOError) as e:
-                Logger.error(f"Failed to stop agent: {e}")
-            finally:
-                if os.path.exists(PID_FILE):
-                    os.remove(PID_FILE)
-
     def status(self, env):
         """Check if the agent cron job is installed."""
         if not os.path.exists(CRON_FILE):
             raise ComponentIsNotRunning()
+
+    def collect(self, env):
+        """Custom command: COLLECT - triggered via Ambari."""
+        Logger.info("ODPSC Agent COLLECT command received")
+        self.configure(env)
+
+        config = self.get_config()
+        odpsc_site = config['configurations'].get('odpsc-site', {})
+        level = odpsc_site.get('bundle_level', 'L1')
+
+        # Check if parameters override the level
+        try:
+            params = config.get('commandParams', {})
+            if params.get('bundle_level'):
+                level = params['bundle_level']
+        except (KeyError, AttributeError):
+            pass
+
+        Execute(
+            f'python3 {AGENT_SCRIPT} --collect --level {level} '
+            f'>> {LOG_DIR}/agent.log 2>&1',
+            user=ODPSC_USER,
+        )
+        Logger.info("ODPSC Agent COLLECT completed (level=%s)" % level)
 
 
 class ComponentIsNotRunning(Exception):

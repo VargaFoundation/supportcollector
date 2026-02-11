@@ -6,7 +6,7 @@
       <name>ODPSC</name>
       <displayName>ODP Support Collector</displayName>
       <comment>Collecte automatique de diagnostics pour le support ODP</comment>
-      <version>1.0</version>
+      <version>2.0</version>
       <components>
         <component>
           <name>ODPSC_MASTER</name>
@@ -19,6 +19,16 @@
             <scriptType>PYTHON</scriptType>
             <timeout>600</timeout>
           </commandScript>
+          <customCommands>
+            <customCommand>
+              <name>AGGREGATE</name>
+              <commandScript>
+                <script>scripts/master.py</script>
+                <scriptType>PYTHON</scriptType>
+                <timeout>600</timeout>
+              </commandScript>
+            </customCommand>
+          </customCommands>
         </component>
         <component>
           <name>ODPSC_AGENT</name>
@@ -31,6 +41,16 @@
             <scriptType>PYTHON</scriptType>
             <timeout>600</timeout>
           </commandScript>
+          <customCommands>
+            <customCommand>
+              <name>COLLECT</name>
+              <commandScript>
+                <script>scripts/agent.py</script>
+                <scriptType>PYTHON</scriptType>
+                <timeout>600</timeout>
+              </commandScript>
+            </customCommand>
+          </customCommands>
         </component>
       </components>
       <osSpecifics>

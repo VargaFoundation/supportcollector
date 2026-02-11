@@ -1,29 +1,48 @@
 openapi: 3.0.0
 info:
-  title: ODPSC API
-  version: 1.0.0
+  title: ODPSC API v2
+  version: 2.0.0
   description: |
-    API for managing ODP Support Collector diagnostics collection and submission.
-    The ODPSC Master exposes these endpoints for agent data submission,
-    manual collection triggers, and configuration management.
+    API for managing ODP Support Collector v2 diagnostics collection and submission.
+    The ODPSC Master exposes these endpoints for agent bundle upload with API key auth,
+    bundle management, collection triggers, aggregation, and configuration management.
+
+    Key changes from v1:
+    - All paths under /api/v2/
+    - API key authentication for agent uploads
+    - Bundle deduplication via X-ODPSC-Bundle-ID header
+    - Bundle levels (L1/L2/L3)
+    - Rate limiting (429 responses)
+    - bcrypt Basic Auth for management endpoints
   contact:
     name: ODP Support
     url: https://support.odp.com
 
 servers:
-  - url: http://master-host:8085/api/v1
-    description: ODPSC Master server
+  - url: http://master-host:8085/api/v2
+    description: ODPSC Master server (v2)
 
 paths:
-  /submit_data:
+  /bundles/upload:
     post:
-      summary: Submit agent diagnostic bundle
+      summary: Upload agent diagnostic bundle
       description: |
-        Internal endpoint used by ODPSC Agents to submit their collected
-        diagnostic data bundles. No authentication required (internal network).
-      operationId: submitData
+        Endpoint used by ODPSC Agents to upload their collected diagnostic data bundles.
+        Requires API key authentication via Bearer token. Bundles are deduplicated
+        using the X-ODPSC-Bundle-ID header.
+      operationId: uploadBundle
       tags:
         - Agent
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - name: X-ODPSC-Bundle-ID
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique bundle identifier for deduplication
       requestBody:
         required: true
         content:
@@ -36,10 +55,10 @@ paths:
                 bundle:
                   type: string
                   format: binary
-                  description: ZIP archive containing agent diagnostic data
+                  description: ZIP archive containing agent diagnostic data with manifest.json
       responses:
         '200':
-          description: Bundle received successfully
+          description: Bundle received or duplicate detected
           content:
             application/json:
               schema:
@@ -47,12 +66,107 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: received
+                    enum: [received, duplicate]
+                  bundle_id:
+                    type: string
                   filename:
                     type: string
-                    example: agent_20250101_120000_hostname.zip
+                  message:
+                    type: string
         '400':
-          description: Bad request (missing bundle file)
+          description: Bad request (missing bundle or bundle ID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too many requests (rate limited)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /bundles:
+    get:
+      summary: List received bundles
+      description: Returns a paginated list of all received agent bundles.
+      operationId: listBundles
+      tags:
+        - Bundles
+      security:
+        - basicAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of bundles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bundles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BundleInfo'
+                  count:
+                    type: integer
+                  total:
+                    type: integer
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /bundles/{bundleId}:
+    get:
+      summary: Download a specific bundle
+      description: Download a previously received bundle by its ID.
+      operationId: getBundle
+      tags:
+        - Bundles
+      security:
+        - basicAuth: []
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Bundle file
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Bundle not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
@@ -62,9 +176,8 @@ paths:
     post:
       summary: Trigger manual collection
       description: |
-        Triggers a manual diagnostic collection cycle. Agents are instructed
-        to collect data, which is then aggregated and analyzed by the master.
-        The resulting bundle is either sent to support or stored in HDFS.
+        Triggers a manual diagnostic collection cycle via Ambari custom command.
+        Agents are instructed to collect data at the specified bundle level.
       operationId: triggerCollect
       tags:
         - Collection
@@ -76,15 +189,19 @@ paths:
             schema:
               type: object
               properties:
+                level:
+                  type: string
+                  enum: [L1, L2, L3]
+                  default: L1
+                  description: |
+                    Bundle level: L1 (configs+sysinfo), L2 (+metrics), L3 (+logs)
                 send:
                   type: boolean
                   default: false
-                  description: |
-                    If true, send the bundle to the support endpoint.
-                    If false, store the bundle in HDFS only.
+                  description: If true, send aggregated bundle to support after collection
       responses:
         '200':
-          description: Collection completed successfully
+          description: Collection triggered successfully
           content:
             application/json:
               schema:
@@ -92,21 +209,66 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [done, sent]
-                  zip:
+                    example: triggered
+                  level:
                     type: string
-                    description: Local path of the generated bundle
-                  hdfs_path:
+                  message:
                     type: string
-                    description: HDFS path (when not sending to support)
         '403':
           description: Collection is disabled
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /aggregate:
+    post:
+      summary: Trigger bundle aggregation
+      description: |
+        Triggers aggregation of all pending (non-aggregated) bundles into a single
+        master bundle with analysis. Optionally archives to HDFS.
+      operationId: triggerAggregate
+      tags:
+        - Collection
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Aggregation completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [aggregated, no_pending]
+                  output:
+                    type: string
+                    description: Path to aggregated bundle
+                  agent_count:
+                    type: integer
+                  bundles_processed:
+                    type: integer
+                  hdfs_path:
+                    type: string
+                    nullable: true
+                  message:
+                    type: string
         '500':
-          description: Collection or send failed
+          description: Aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
@@ -117,7 +279,7 @@ paths:
       summary: Get current configuration
       description: |
         Returns the current ODPSC configuration. Sensitive fields
-        (tokens, passwords, encryption keys) are masked in the response.
+        (tokens, passwords, encryption keys, API keys) are masked.
       operationId: getConfig
       tags:
         - Configuration
@@ -141,7 +303,7 @@ paths:
       summary: Update configuration
       description: |
         Update one or more configuration properties. Only whitelisted
-        properties can be modified. Changes take effect immediately.
+        properties can be modified. Password changes are hashed with bcrypt.
       operationId: updateConfig
       tags:
         - Configuration
@@ -168,7 +330,6 @@ paths:
                     type: array
                     items:
                       type: string
-                    description: List of property names that were updated
         '400':
           description: Invalid request body
           content:
@@ -202,13 +363,20 @@ paths:
                   status:
                     type: string
                     example: running
+                  version:
+                    type: string
+                    example: "2.0"
                   collection_enabled:
                     type: boolean
                   auto_send_enabled:
                     type: boolean
                   send_frequency:
                     type: string
-                  agent_bundles_received:
+                  hdfs_archive_enabled:
+                    type: boolean
+                  bundle_count:
+                    type: integer
+                  pending_bundles:
                     type: integer
                   timestamp:
                     type: string
@@ -225,7 +393,12 @@ components:
     basicAuth:
       type: http
       scheme: basic
-      description: Basic authentication with admin username and password
+      description: Basic authentication with admin username and bcrypt-hashed password
+
+    apiKeyAuth:
+      type: http
+      scheme: bearer
+      description: API key authentication for agent bundle uploads
 
   schemas:
     Error:
@@ -235,53 +408,74 @@ components:
           type: string
           description: Error message
 
+    BundleInfo:
+      type: object
+      properties:
+        bundle_id:
+          type: string
+          format: uuid
+        hostname:
+          type: string
+        filename:
+          type: string
+        level:
+          type: string
+          enum: [L1, L2, L3]
+        size_bytes:
+          type: integer
+        received_at:
+          type: string
+          format: date-time
+        aggregated:
+          type: integer
+          description: 1 if aggregated, 0 if pending
+
     Config:
       type: object
       properties:
         collection_enabled:
           type: boolean
-          description: Whether diagnostic collection is enabled
         auto_send_enabled:
           type: boolean
-          description: Whether automatic sending to support is enabled
         send_frequency:
           type: string
           enum: [daily, weekly, monthly]
-          description: Frequency of automatic collection
         support_endpoint:
           type: string
           format: uri
-          description: URL of the support upload endpoint
         support_token:
           type: string
-          description: API token for support (masked in response)
+          description: Masked in response
         hdfs_path:
           type: string
-          description: HDFS path for bundle storage
+        hdfs_archive_enabled:
+          type: boolean
         log_paths:
           type: array
           items:
             type: string
-          description: Glob patterns for log file collection
         master_port:
           type: integer
-          description: Port the master server listens on
         admin_username:
           type: string
-          description: Basic auth username
-        admin_password:
+        admin_password_hash:
           type: string
-          description: Basic auth password (masked in response)
+          description: Masked in response
+        api_key:
+          type: string
+          description: Masked in response
         encryption_key:
           type: string
-          description: AES encryption key (masked in response)
-        ambari_server_url:
+          description: Masked in response
+        max_upload_size_mb:
+          type: integer
+        max_bundle_size_mb:
+          type: integer
+        bundle_level:
           type: string
-          format: uri
-          description: Ambari server URL
-        cluster_name:
-          type: string
-          description: Ambari cluster name
+          enum: [L1, L2, L3]
+        gunicorn_workers:
+          type: integer
 
     ConfigUpdate:
       type: object
@@ -301,6 +495,8 @@ components:
           type: string
         hdfs_path:
           type: string
+        hdfs_archive_enabled:
+          type: boolean
         log_paths:
           type: array
           items:
@@ -309,5 +505,13 @@ components:
           type: string
         admin_password:
           type: string
+          description: Will be hashed with bcrypt before storage
         encryption_key:
           type: string
+        max_upload_size_mb:
+          type: integer
+        max_bundle_size_mb:
+          type: integer
+        bundle_level:
+          type: string
+          enum: [L1, L2, L3]

@@ -5,10 +5,14 @@
   "support_endpoint": "https://support.odp.com/upload",
   "support_token": "",
   "hdfs_path": "/odpsc/diagnostics",
+  "hdfs_archive_enabled": false,
   "master_port": 8085,
   "admin_username": "admin",
-  "admin_password": "admin",
+  "admin_password_hash": "",
+  "api_key": "",
   "encryption_key": "",
+  "max_upload_size_mb": 100,
+  "max_bundle_size_mb": 500,
   "log_paths": [
     "/var/log/hadoop/*",
     "/var/log/hive/*",
@@ -16,5 +20,6 @@
     "/var/log/yarn/*"
   ],
   "ambari_server_url": "http://localhost:8080",
-  "cluster_name": "cluster"
+  "cluster_name": "cluster",
+  "gunicorn_workers": 2
 }

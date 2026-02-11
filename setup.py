@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name='odpsc',
-    version='1.0.0',
-    description='ODP Support Collector - Diagnostic collection for Hadoop/ODP clusters',
+    version='2.0.0',
+    description='ODP Support Collector v2 - Diagnostic collection for Hadoop/ODP clusters',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     author='ODP Team',
@@ -12,10 +12,11 @@ setup(
     python_requires='>=3.6',
     install_requires=[
         'flask>=2.0,<4.0',
-        'schedule>=1.1,<2.0',
         'requests>=2.25,<3.0',
         'psutil>=5.8,<6.0',
         'cryptography>=3.4,<43.0',
+        'gunicorn>=21.0,<23.0',
+        'bcrypt>=4.0,<5.0',
     ],
     extras_require={
         'dev': [
