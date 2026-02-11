@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<metainfo>
+  <schemaVersion>2.0</schemaVersion>
+  <services>
+    <service>
+      <name>ODPSC</name>
+      <displayName>ODP Support Collector</displayName>
+      <comment>Collecte automatique de diagnostics pour le support ODP</comment>
+      <version>1.0</version>
+      <components>
+        <component>
+          <name>ODPSC_MASTER</name>
+          <displayName>ODPSC Master</displayName>
+          <category>MASTER</category>
+          <cardinality>1</cardinality>
+          <versionAdvertised>true</versionAdvertised>
+          <commandScript>
+            <script>scripts/master.py</script>
+            <scriptType>PYTHON</scriptType>
+            <timeout>600</timeout>
+          </commandScript>
+        </component>
+        <component>
+          <name>ODPSC_AGENT</name>
+          <displayName>ODPSC Agent</displayName>
+          <category>SLAVE</category>
+          <cardinality>ALL</cardinality>
+          <versionAdvertised>true</versionAdvertised>
+          <commandScript>
+            <script>scripts/agent.py</script>
+            <scriptType>PYTHON</scriptType>
+            <timeout>600</timeout>
+          </commandScript>
+        </component>
+      </components>
+      <osSpecifics>
+        <osSpecific>
+          <osFamily>any</osFamily>
+          <packages>
+            <package>
+              <name>python3</name>
+            </package>
+            <package>
+              <name>python3-pip</name>
+            </package>
+          </packages>
+        </osSpecific>
+      </osSpecifics>
+      <configuration-dependencies>
+        <config-type>odpsc-site</config-type>
+      </configuration-dependencies>
+    </service>
+  </services>
+</metainfo>

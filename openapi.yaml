@@ -1,0 +1,313 @@
+openapi: 3.0.0
+info:
+  title: ODPSC API
+  version: 1.0.0
+  description: |
+    API for managing ODP Support Collector diagnostics collection and submission.
+    The ODPSC Master exposes these endpoints for agent data submission,
+    manual collection triggers, and configuration management.
+  contact:
+    name: ODP Support
+    url: https://support.odp.com
+
+servers:
+  - url: http://master-host:8085/api/v1
+    description: ODPSC Master server
+
+paths:
+  /submit_data:
+    post:
+      summary: Submit agent diagnostic bundle
+      description: |
+        Internal endpoint used by ODPSC Agents to submit their collected
+        diagnostic data bundles. No authentication required (internal network).
+      operationId: submitData
+      tags:
+        - Agent
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - bundle
+              properties:
+                bundle:
+                  type: string
+                  format: binary
+                  description: ZIP archive containing agent diagnostic data
+      responses:
+        '200':
+          description: Bundle received successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: received
+                  filename:
+                    type: string
+                    example: agent_20250101_120000_hostname.zip
+        '400':
+          description: Bad request (missing bundle file)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /collect:
+    post:
+      summary: Trigger manual collection
+      description: |
+        Triggers a manual diagnostic collection cycle. Agents are instructed
+        to collect data, which is then aggregated and analyzed by the master.
+        The resulting bundle is either sent to support or stored in HDFS.
+      operationId: triggerCollect
+      tags:
+        - Collection
+      security:
+        - basicAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                send:
+                  type: boolean
+                  default: false
+                  description: |
+                    If true, send the bundle to the support endpoint.
+                    If false, store the bundle in HDFS only.
+      responses:
+        '200':
+          description: Collection completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [done, sent]
+                  zip:
+                    type: string
+                    description: Local path of the generated bundle
+                  hdfs_path:
+                    type: string
+                    description: HDFS path (when not sending to support)
+        '403':
+          description: Collection is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Collection or send failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /config:
+    get:
+      summary: Get current configuration
+      description: |
+        Returns the current ODPSC configuration. Sensitive fields
+        (tokens, passwords, encryption keys) are masked in the response.
+      operationId: getConfig
+      tags:
+        - Configuration
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Update configuration
+      description: |
+        Update one or more configuration properties. Only whitelisted
+        properties can be modified. Changes take effect immediately.
+      operationId: updateConfig
+      tags:
+        - Configuration
+      security:
+        - basicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigUpdate'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: updated
+                  applied:
+                    type: array
+                    items:
+                      type: string
+                    description: List of property names that were updated
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /status:
+    get:
+      summary: Get master status
+      description: Returns the current operational status of the ODPSC Master.
+      operationId: getStatus
+      tags:
+        - Status
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: running
+                  collection_enabled:
+                    type: boolean
+                  auto_send_enabled:
+                    type: boolean
+                  send_frequency:
+                    type: string
+                  agent_bundles_received:
+                    type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Basic authentication with admin username and password
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+
+    Config:
+      type: object
+      properties:
+        collection_enabled:
+          type: boolean
+          description: Whether diagnostic collection is enabled
+        auto_send_enabled:
+          type: boolean
+          description: Whether automatic sending to support is enabled
+        send_frequency:
+          type: string
+          enum: [daily, weekly, monthly]
+          description: Frequency of automatic collection
+        support_endpoint:
+          type: string
+          format: uri
+          description: URL of the support upload endpoint
+        support_token:
+          type: string
+          description: API token for support (masked in response)
+        hdfs_path:
+          type: string
+          description: HDFS path for bundle storage
+        log_paths:
+          type: array
+          items:
+            type: string
+          description: Glob patterns for log file collection
+        master_port:
+          type: integer
+          description: Port the master server listens on
+        admin_username:
+          type: string
+          description: Basic auth username
+        admin_password:
+          type: string
+          description: Basic auth password (masked in response)
+        encryption_key:
+          type: string
+          description: AES encryption key (masked in response)
+        ambari_server_url:
+          type: string
+          format: uri
+          description: Ambari server URL
+        cluster_name:
+          type: string
+          description: Ambari cluster name
+
+    ConfigUpdate:
+      type: object
+      description: Partial configuration update. Only include properties to change.
+      properties:
+        collection_enabled:
+          type: boolean
+        auto_send_enabled:
+          type: boolean
+        send_frequency:
+          type: string
+          enum: [daily, weekly, monthly]
+        support_endpoint:
+          type: string
+          format: uri
+        support_token:
+          type: string
+        hdfs_path:
+          type: string
+        log_paths:
+          type: array
+          items:
+            type: string
+        admin_username:
+          type: string
+        admin_password:
+          type: string
+        encryption_key:
+          type: string

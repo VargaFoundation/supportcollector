@@ -1,0 +1,17 @@
+{
+  "collection_enabled": true,
+  "master_url": "http://localhost:8085/api/v1/submit_data",
+  "log_paths": [
+    "/var/log/hadoop/*",
+    "/var/log/hive/*",
+    "/var/log/spark/*",
+    "/var/log/yarn/*"
+  ],
+  "config_paths": [
+    "/etc/hadoop/conf/*"
+  ],
+  "max_log_size_mb": 1,
+  "log_retention_days": 7,
+  "ambari_server_url": "http://localhost:8080",
+  "cluster_name": "cluster"
+}

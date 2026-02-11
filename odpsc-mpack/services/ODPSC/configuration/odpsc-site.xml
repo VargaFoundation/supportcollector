@@ -1,0 +1,162 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <property>
+    <name>collection_enabled</name>
+    <value>true</value>
+    <description>Active ou désactive la collecte de diagnostics. Si false, aucune collecte n'est effectuée.</description>
+    <display-name>Collection Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>auto_send_enabled</name>
+    <value>true</value>
+    <description>Active ou désactive l'envoi automatique des bundles au support. Si false, les bundles sont générés mais pas envoyés.</description>
+    <display-name>Auto Send Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>send_frequency</name>
+    <value>weekly</value>
+    <description>Fréquence d'envoi des diagnostics. Valeurs possibles : daily, weekly, monthly.</description>
+    <display-name>Send Frequency</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>support_endpoint</name>
+    <value>https://support.odp.com/upload</value>
+    <description>URL de l'endpoint de support pour l'envoi des bundles diagnostiques.</description>
+    <display-name>Support Endpoint URL</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>support_token</name>
+    <value></value>
+    <description>Token d'authentification pour l'envoi au support. Obligatoire si auto_send_enabled est true.</description>
+    <display-name>Support API Token</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>hdfs_path</name>
+    <value>/odpsc/diagnostics</value>
+    <description>Chemin HDFS pour le stockage des bundles en mode manuel.</description>
+    <display-name>HDFS Output Path</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>log_paths</name>
+    <value>["/var/log/hadoop/*", "/var/log/hive/*", "/var/log/spark/*", "/var/log/yarn/*"]</value>
+    <description>Liste JSON des chemins de logs à collecter (supporte les globs).</description>
+    <display-name>Log Paths</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>master_port</name>
+    <value>8085</value>
+    <description>Port d'écoute du serveur ODPSC Master.</description>
+    <display-name>Master Port</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>1024</minimum>
+      <maximum>65535</maximum>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>admin_username</name>
+    <value>admin</value>
+    <description>Nom d'utilisateur pour l'authentification Basic Auth de l'API.</description>
+    <display-name>Admin Username</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>admin_password</name>
+    <value>admin</value>
+    <description>Mot de passe pour l'authentification Basic Auth de l'API.</description>
+    <display-name>Admin Password</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>encryption_key</name>
+    <value></value>
+    <description>Clé AES-256 pour le chiffrement des bundles locaux (base64). Si vide, une clé est générée automatiquement.</description>
+    <display-name>Encryption Key</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>log_retention_days</name>
+    <value>7</value>
+    <description>Nombre de jours de logs à collecter.</description>
+    <display-name>Log Retention Days</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>1</minimum>
+      <maximum>30</maximum>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>max_log_size_mb</name>
+    <value>1</value>
+    <description>Taille maximale en MB de logs à collecter par fichier.</description>
+    <display-name>Max Log Size (MB)</display-name>
+    <value-attributes>
+      <type>int</type>
+      <minimum>1</minimum>
+      <maximum>100</maximum>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>ambari_server_url</name>
+    <value>http://localhost:8080</value>
+    <description>URL du serveur Ambari pour la collecte de métriques.</description>
+    <display-name>Ambari Server URL</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>cluster_name</name>
+    <value>cluster</value>
+    <description>Nom du cluster Ambari.</description>
+    <display-name>Cluster Name</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+</configuration>

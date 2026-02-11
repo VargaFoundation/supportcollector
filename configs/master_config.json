@@ -1,0 +1,20 @@
+{
+  "collection_enabled": true,
+  "auto_send_enabled": true,
+  "send_frequency": "weekly",
+  "support_endpoint": "https://support.odp.com/upload",
+  "support_token": "",
+  "hdfs_path": "/odpsc/diagnostics",
+  "master_port": 8085,
+  "admin_username": "admin",
+  "admin_password": "admin",
+  "encryption_key": "",
+  "log_paths": [
+    "/var/log/hadoop/*",
+    "/var/log/hive/*",
+    "/var/log/spark/*",
+    "/var/log/yarn/*"
+  ],
+  "ambari_server_url": "http://localhost:8080",
+  "cluster_name": "cluster"
+}
