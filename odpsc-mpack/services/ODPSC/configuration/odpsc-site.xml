@@ -276,4 +276,45 @@
       <type>boolean</type>
     </value-attributes>
   </property>
+
+  <property>
+    <name>attachment_otp</name>
+    <value></value>
+    <description>OTP pour l'attachement du cluster au SupportPlane. Généré par le SupportPlane lors de la demande d'attachement.</description>
+    <display-name>Attachment OTP</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_enabled</name>
+    <value>false</value>
+    <description>Active l'envoi des bundles au SupportPlane.</description>
+    <display-name>SupportPlane Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_endpoint</name>
+    <value></value>
+    <description>URL de l'endpoint SupportPlane pour l'envoi des bundles.</description>
+    <display-name>SupportPlane Endpoint URL</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_token</name>
+    <value></value>
+    <description>Token d'authentification pour l'envoi au SupportPlane.</description>
+    <display-name>SupportPlane Token</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
 </configuration>

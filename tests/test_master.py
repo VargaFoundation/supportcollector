@@ -651,7 +651,7 @@ class TestStatusEndpoint:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['status'] == 'running'
-        assert data['version'] == '2.1'
+        assert data['version'] == '2.2'
         assert 'collection_enabled' in data
         assert 'auto_send_enabled' in data
         assert 'bundle_count' in data
@@ -821,7 +821,7 @@ class TestClusterIdInAggregation:
         with zipfile.ZipFile(result['output'], 'r') as zf:
             metadata = json.loads(zf.read('metadata.json'))
             assert metadata['cluster_id'] == 'my-cluster-id'
-            assert metadata['odpsc_version'] == '2.1'
+            assert metadata['odpsc_version'] == '2.2'
             # Topology should be included
             assert 'topology.json' in zf.namelist()
 

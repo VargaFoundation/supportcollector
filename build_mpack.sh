@@ -28,6 +28,7 @@ required_files=(
     "${MPACK_DIR}/services/ODPSC/resources/odpsc_agent.py"
     "${MPACK_DIR}/services/ODPSC/resources/analyzer.py"
     "${MPACK_DIR}/services/ODPSC/resources/audit.py"
+    "${MPACK_DIR}/services/ODPSC/resources/collectors.py"
     "${MPACK_DIR}/services/ODPSC/resources/wsgi.py"
     "${MPACK_DIR}/services/ODPSC/resources/requirements.txt"
 )
@@ -49,6 +50,7 @@ python_files=(
     "${MPACK_DIR}/services/ODPSC/resources/odpsc_agent.py"
     "${MPACK_DIR}/services/ODPSC/resources/analyzer.py"
     "${MPACK_DIR}/services/ODPSC/resources/audit.py"
+    "${MPACK_DIR}/services/ODPSC/resources/collectors.py"
     "${MPACK_DIR}/services/ODPSC/resources/wsgi.py"
 )
 

@@ -312,7 +312,7 @@ class TestBundleManifest:
             manifest = json.loads(zf.read('manifest.json'))
             assert manifest['bundle_id'] == bundle_id
             assert manifest['level'] == 'L1'
-            assert manifest['odpsc_version'] == '2.1'
+            assert manifest['odpsc_version'] == '2.2'
             assert 'hostname' in manifest
             assert 'timestamp' in manifest
 
@@ -708,7 +708,7 @@ class TestClusterIdInBundle:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             manifest = json.loads(zf.read('manifest.json'))
             assert manifest['cluster_id'] == 'my-cluster-id-123'
-            assert manifest['odpsc_version'] == '2.1'
+            assert manifest['odpsc_version'] == '2.2'
 
     def test_cluster_id_in_system_info(self):
         info = collect_system_info(cluster_id='test-cid')

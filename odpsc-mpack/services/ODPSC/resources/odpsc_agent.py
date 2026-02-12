@@ -23,6 +23,17 @@ from datetime import datetime, timedelta
 import psutil
 import requests
 
+from collectors import (
+    collect_jmx_metrics,
+    collect_granular_metrics,
+    collect_kerberos_status,
+    collect_ssl_certs,
+    collect_thread_dumps,
+    collect_gc_logs,
+    collect_kernel_params,
+    collect_config_drift,
+)
+
 LOG_DIR = '/var/log/odpsc'
 CONFIG_PATH = '/etc/odpsc/agent_config.json'
 
@@ -776,7 +787,7 @@ def create_bundle(data, bundle_id, level, dest_dir):
         'cluster_id': cluster_id,
         'level': level,
         'timestamp': datetime.now(tz=None).isoformat(),
-        'odpsc_version': '2.1',
+        'odpsc_version': '2.2',
         'contents': [],
     }
 
@@ -795,25 +806,43 @@ def create_bundle(data, bundle_id, level, dest_dir):
             zf.writestr('metrics.json', json.dumps(data.get('metrics', {}), indent=2))
             manifest['contents'].append('metrics.json')
 
-        # L1+: topology, service_health, log_tails
-        for key in ('topology', 'service_health', 'log_tails'):
+        # L1+: topology, service_health, log_tails, kerberos, ssl, kernel
+        for key in ('topology', 'service_health', 'log_tails',
+                     'kerberos_status', 'ssl_certs', 'kernel_params'):
             if key in data and data[key]:
                 filename = f'{key}.json'
                 zf.writestr(filename, json.dumps(data[key], indent=2))
                 manifest['contents'].append(filename)
 
-        # L2+: include metrics, yarn_queues, hdfs_report, alert_history
+        # L2+: include metrics, yarn_queues, hdfs_report, alert_history, jmx, granular, drift
         if level in ('L2', 'L3'):
-            for key in ('yarn_queues', 'hdfs_report', 'alert_history'):
+            for key in ('yarn_queues', 'hdfs_report', 'alert_history',
+                         'jmx_metrics', 'granular_metrics', 'config_drift'):
                 if key in data and data[key]:
                     filename = f'{key}.json'
                     zf.writestr(filename, json.dumps(data[key], indent=2))
                     manifest['contents'].append(filename)
 
-        # L3: include logs
+        # L3: include logs + thread_dumps + gc_logs
         if level == 'L3':
             for filepath, content in data.get('logs', {}).items():
                 arcname = f'logs/{os.path.basename(filepath)}'
+                zf.writestr(arcname, content)
+                manifest['contents'].append(arcname)
+
+            # Thread dumps as individual files
+            thread_dumps = data.get('thread_dumps', {})
+            for pid, dump_data in thread_dumps.get('dumps', {}).items():
+                arcname = f'thread_dumps/{pid}.txt'
+                dump_content = dump_data if isinstance(dump_data, str) else dump_data.get('dump', '')
+                zf.writestr(arcname, dump_content)
+                manifest['contents'].append(arcname)
+
+            # GC logs as individual files
+            gc_logs = data.get('gc_logs', {})
+            for name, content in gc_logs.get('gc_logs', {}).items():
+                safe_name = name.replace('/', '_').replace('\\', '_')
+                arcname = f'gc_logs/{safe_name}'
                 zf.writestr(arcname, content)
                 manifest['contents'].append(arcname)
 
@@ -915,7 +944,12 @@ def run_collection(config, level=None):
             config.get('log_paths', []), tail_lines=200,
         )
 
-        # L2+: metrics + yarn_queues + hdfs_report + alert_history
+        # L1+: kerberos, ssl_certs, kernel_params
+        data['kerberos_status'] = collect_kerberos_status()
+        data['ssl_certs'] = collect_ssl_certs(ambari_url, cluster_name)
+        data['kernel_params'] = collect_kernel_params()
+
+        # L2+: metrics + yarn_queues + hdfs_report + alert_history + jmx + granular + drift
         if level in ('L2', 'L3'):
             data['metrics'] = collect_metrics(
                 ambari_server_url=ambari_url,
@@ -924,14 +958,19 @@ def run_collection(config, level=None):
             data['yarn_queues'] = collect_yarn_queues(ambari_url, cluster_name)
             data['hdfs_report'] = collect_hdfs_report()
             data['alert_history'] = collect_alert_history(ambari_url, cluster_name)
+            data['jmx_metrics'] = collect_jmx_metrics(ambari_url, cluster_name)
+            data['granular_metrics'] = collect_granular_metrics()
+            data['config_drift'] = collect_config_drift(ambari_url, cluster_name)
 
-        # L3: full logs
+        # L3: full logs + thread_dumps + gc_logs
         if level == 'L3':
             data['logs'] = collect_logs(
                 config.get('log_paths', []),
                 max_size_mb=config.get('max_log_size_mb', 1),
                 retention_days=config.get('log_retention_days', 7),
             )
+            data['thread_dumps'] = collect_thread_dumps()
+            data['gc_logs'] = collect_gc_logs()
 
         ensure_dirs()
         zip_path = create_bundle(data, bundle_id, level, OUTBOX_DIR)

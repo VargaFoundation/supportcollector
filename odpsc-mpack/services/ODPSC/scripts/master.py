@@ -83,7 +83,7 @@ class OdpscMaster(Script):
         service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         resources_src = os.path.join(service_dir, 'resources')
 
-        for filename in ('odpsc_master.py', 'analyzer.py', 'wsgi.py', 'audit.py', 'requirements.txt'):
+        for filename in ('odpsc_master.py', 'analyzer.py', 'wsgi.py', 'audit.py', 'collectors.py', 'requirements.txt'):
             src = os.path.join(resources_src, filename)
             dst = os.path.join(RESOURCES_DIR, filename)
             if os.path.exists(src):
@@ -187,6 +187,10 @@ class OdpscMaster(Script):
             'bundle_level': odpsc_site.get('bundle_level', 'L1'),
             'cluster_id': cluster_id,
             'audit_enabled': odpsc_site.get('audit_enabled', 'false').lower() == 'true',
+            'supportplane_enabled': odpsc_site.get('supportplane_enabled', 'false').lower() == 'true',
+            'supportplane_endpoint': odpsc_site.get('supportplane_endpoint', ''),
+            'supportplane_token': odpsc_site.get('supportplane_token', ''),
+            'attachment_otp': odpsc_site.get('attachment_otp', ''),
         }
 
         config_path = os.path.join(CONFIG_DIR, 'master_config.json')

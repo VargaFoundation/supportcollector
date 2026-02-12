@@ -628,7 +628,7 @@ def create_app(config=None):
 
         return jsonify({
             'status': 'running',
-            'version': '2.1',
+            'version': '2.2',
             'cluster_id': cfg.get('cluster_id', ''),
             'collection_enabled': cfg.get('collection_enabled', True),
             'auto_send_enabled': cfg.get('auto_send_enabled', True),
@@ -744,6 +744,14 @@ def _aggregate_bundles(store, config):
     all_yarn_queues = []
     all_hdfs_report = []
     all_alert_history = []
+    all_jmx_metrics = []
+    all_granular_metrics = []
+    all_kerberos_status = []
+    all_ssl_certs = []
+    all_kernel_params = []
+    all_config_drift = []
+    all_thread_dumps = {}
+    all_gc_logs = {}
     agent_count = 0
     aggregated_ids = []
     cluster_id = config.get('cluster_id', '')
@@ -816,6 +824,42 @@ def _aggregate_bundles(store, config):
                             all_alert_history.append(json.loads(content))
                         except json.JSONDecodeError:
                             pass
+                    elif name == 'jmx_metrics.json':
+                        try:
+                            all_jmx_metrics.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'granular_metrics.json':
+                        try:
+                            all_granular_metrics.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'kerberos_status.json':
+                        try:
+                            all_kerberos_status.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'ssl_certs.json':
+                        try:
+                            all_ssl_certs.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'kernel_params.json':
+                        try:
+                            all_kernel_params.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'config_drift.json':
+                        try:
+                            all_config_drift.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name.startswith('thread_dumps/'):
+                        td_key = f"{bundle_info['hostname']}:{name}"
+                        all_thread_dumps[td_key] = content
+                    elif name.startswith('gc_logs/'):
+                        gc_key = f"{bundle_info['hostname']}:{name}"
+                        all_gc_logs[gc_key] = content
 
             agent_count += 1
             aggregated_ids.append(bundle_info['bundle_id'])
@@ -857,13 +901,31 @@ def _aggregate_bundles(store, config):
             zf.writestr('hdfs_report.json', json.dumps(all_hdfs_report, indent=2))
         if all_alert_history:
             zf.writestr('alert_history.json', json.dumps(all_alert_history, indent=2))
+        if all_jmx_metrics:
+            zf.writestr('jmx_metrics.json', json.dumps(all_jmx_metrics, indent=2))
+        if all_granular_metrics:
+            zf.writestr('granular_metrics.json', json.dumps(all_granular_metrics, indent=2))
+        if all_kerberos_status:
+            zf.writestr('kerberos_status.json', json.dumps(all_kerberos_status, indent=2))
+        if all_ssl_certs:
+            zf.writestr('ssl_certs.json', json.dumps(all_ssl_certs, indent=2))
+        if all_kernel_params:
+            zf.writestr('kernel_params.json', json.dumps(all_kernel_params, indent=2))
+        if all_config_drift:
+            zf.writestr('config_drift.json', json.dumps(all_config_drift, indent=2))
+        for key, content in all_thread_dumps.items():
+            safe_key = key.replace(':', '_').replace('/', '_')
+            zf.writestr(f'thread_dumps/{safe_key}', content)
+        for key, content in all_gc_logs.items():
+            safe_key = key.replace(':', '_').replace('/', '_')
+            zf.writestr(f'gc_logs/{safe_key}', content)
 
         metadata = {
             'created': timestamp,
             'agent_count': agent_count,
             'bundle_ids': aggregated_ids,
             'cluster_id': cluster_id,
-            'odpsc_version': '2.1',
+            'odpsc_version': '2.2',
         }
         zf.writestr('metadata.json', json.dumps(metadata, indent=2))
 
@@ -880,6 +942,11 @@ def _aggregate_bundles(store, config):
     if config.get('hdfs_archive_enabled', False):
         hdfs_path = _put_to_hdfs(output_path, config)
 
+    # Send to SupportPlane if enabled
+    supportplane_sent = False
+    if config.get('supportplane_enabled', False):
+        supportplane_sent = _send_to_supportplane(output_path, config)
+
     logger.info(
         "Aggregated %d bundles into %s (%d logs, %d metrics)",
         agent_count, output_path, len(all_logs), len(all_metrics),
@@ -891,6 +958,7 @@ def _aggregate_bundles(store, config):
         'agent_count': agent_count,
         'bundles_processed': len(aggregated_ids),
         'hdfs_path': hdfs_path,
+        'supportplane_sent': supportplane_sent,
     }
 
 
@@ -925,6 +993,47 @@ def _send_to_support(zip_path, config):
             return False
     except requests.RequestException as e:
         logger.error("Failed to send to support: %s", e)
+        return False
+
+
+def _send_to_supportplane(zip_path, config):
+    """Send the aggregated bundle to the SupportPlane application."""
+    endpoint = config.get('supportplane_endpoint', '')
+    token = config.get('supportplane_token', '')
+    cluster_id = config.get('cluster_id', '')
+    attachment_otp = config.get('attachment_otp', '')
+
+    if not endpoint:
+        logger.error("No SupportPlane endpoint configured")
+        return False
+
+    headers = {}
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    headers['X-ODPSC-Bundle-ID'] = os.path.basename(zip_path)
+    if cluster_id:
+        headers['X-ODPSC-Cluster-ID'] = cluster_id
+    if attachment_otp:
+        headers['X-ODPSC-Attachment-OTP'] = attachment_otp
+
+    try:
+        with open(zip_path, 'rb') as f:
+            resp = requests.post(
+                endpoint,
+                files={'bundle': (os.path.basename(zip_path), f, 'application/zip')},
+                headers=headers,
+                timeout=300,
+            )
+        if resp.status_code in (200, 201):
+            logger.info("Bundle sent to SupportPlane successfully")
+            return True
+        else:
+            logger.error(
+                "SupportPlane endpoint returned %d: %s", resp.status_code, resp.text
+            )
+            return False
+    except requests.RequestException as e:
+        logger.error("Failed to send to SupportPlane: %s", e)
         return False
 
 
