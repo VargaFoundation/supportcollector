@@ -256,4 +256,24 @@
       <maximum>16</maximum>
     </value-attributes>
   </property>
+
+  <property>
+    <name>cluster_id</name>
+    <value></value>
+    <description>Identifiant unique du cluster. Généré automatiquement lors de l'installation du master.</description>
+    <display-name>Cluster ID</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>audit_enabled</name>
+    <value>false</value>
+    <description>Active l'audit des opérations (bundles reçus, agrégés, envoyés). Désactivé par défaut.</description>
+    <display-name>Audit Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
 </configuration>

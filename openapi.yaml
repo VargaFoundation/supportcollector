@@ -1,26 +1,24 @@
 openapi: 3.0.0
 info:
-  title: ODPSC API v2
-  version: 2.0.0
+  title: ODPSC API v2.1
+  version: 2.1.0
   description: |
-    API for managing ODP Support Collector v2 diagnostics collection and submission.
+    API for managing ODP Support Collector v2.1 diagnostics collection and submission.
     The ODPSC Master exposes these endpoints for agent bundle upload with API key auth,
-    bundle management, collection triggers, aggregation, and configuration management.
+    bundle management, collection triggers, aggregation, audit, and configuration management.
 
-    Key changes from v1:
-    - All paths under /api/v2/
-    - API key authentication for agent uploads
-    - Bundle deduplication via X-ODPSC-Bundle-ID header
-    - Bundle levels (L1/L2/L3)
-    - Rate limiting (429 responses)
-    - bcrypt Basic Auth for management endpoints
+    Key features in v2.1:
+    - Cluster ID for per-cluster correlation
+    - Cluster topology collection
+    - Audit trail for bundle operations
+    - Enhanced diagnostics (service health, HDFS report, YARN queues, alert history, log tails)
   contact:
     name: ODP Support
     url: https://support.odp.com
 
 servers:
   - url: http://master-host:8085/api/v2
-    description: ODPSC Master server (v2)
+    description: ODPSC Master server (v2.1)
 
 paths:
   /bundles/upload:
@@ -43,6 +41,12 @@ paths:
             type: string
             format: uuid
           description: Unique bundle identifier for deduplication
+        - name: X-ODPSC-Cluster-ID
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Cluster identifier for per-cluster correlation
       requestBody:
         required: true
         content:
@@ -194,7 +198,7 @@ paths:
                   enum: [L1, L2, L3]
                   default: L1
                   description: |
-                    Bundle level: L1 (configs+sysinfo), L2 (+metrics), L3 (+logs)
+                    Bundle level: L1 (configs+sysinfo+topology+health), L2 (+metrics+HDFS+YARN+alerts), L3 (+full logs)
                 send:
                   type: boolean
                   default: false
@@ -365,7 +369,10 @@ paths:
                     example: running
                   version:
                     type: string
-                    example: "2.0"
+                    example: "2.1"
+                  cluster_id:
+                    type: string
+                    description: Unique cluster identifier
                   collection_enabled:
                     type: boolean
                   auto_send_enabled:
@@ -374,6 +381,8 @@ paths:
                     type: string
                   hdfs_archive_enabled:
                     type: boolean
+                  audit_enabled:
+                    type: boolean
                   bundle_count:
                     type: integer
                   pending_bundles:
@@ -381,6 +390,108 @@ paths:
                   timestamp:
                     type: string
                     format: date-time
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /audit:
+    get:
+      summary: Get audit events
+      description: |
+        Returns paginated audit events. Only available when audit_enabled is true.
+        Audit events track all bundle operations for transparency.
+      operationId: getAuditEvents
+      tags:
+        - Audit
+      security:
+        - basicAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: event_type
+          in: query
+          schema:
+            type: string
+            enum: [bundle_received, bundle_aggregated, bundle_sent]
+          description: Filter by event type
+      responses:
+        '200':
+          description: List of audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  count:
+                    type: integer
+                  total:
+                    type: integer
+        '403':
+          description: Audit is not enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /audit/{bundleId}:
+    get:
+      summary: Get audit events for a specific bundle
+      description: Returns all audit events associated with a specific bundle ID.
+      operationId: getAuditForBundle
+      tags:
+        - Audit
+      security:
+        - basicAuth: []
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Audit events for the bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bundle_id:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  count:
+                    type: integer
+        '403':
+          description: Audit is not enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
           content:
@@ -423,12 +534,45 @@ components:
           enum: [L1, L2, L3]
         size_bytes:
           type: integer
+        cluster_id:
+          type: string
+          description: Cluster identifier
         received_at:
           type: string
           format: date-time
         aggregated:
           type: integer
           description: 1 if aggregated, 0 if pending
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        event_type:
+          type: string
+          enum: [bundle_received, bundle_aggregated, bundle_sent]
+        bundle_id:
+          type: string
+        cluster_id:
+          type: string
+        hostname:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        destination:
+          type: string
+        size_bytes:
+          type: integer
+        content_summary:
+          type: string
+          description: JSON list of files in the bundle with sizes
+        details:
+          type: string
 
     Config:
       type: object
@@ -476,6 +620,12 @@ components:
           enum: [L1, L2, L3]
         gunicorn_workers:
           type: integer
+        cluster_id:
+          type: string
+          description: Unique cluster identifier
+        audit_enabled:
+          type: boolean
+          description: Whether audit logging is enabled
 
     ConfigUpdate:
       type: object
@@ -515,3 +665,6 @@ components:
         bundle_level:
           type: string
           enum: [L1, L2, L3]
+        audit_enabled:
+          type: boolean
+          description: Enable or disable audit logging

@@ -60,6 +60,7 @@ DEFAULT_CONFIG = {
     'log_retention_days': 7,
     'ambari_server_url': 'http://localhost:8080',
     'cluster_name': 'cluster',
+    'cluster_id': '',
 }
 
 # Sensitive data patterns for masking
@@ -274,16 +275,20 @@ def mask_sensitive_data(content):
     return content
 
 
-def collect_system_info():
+def collect_system_info(cluster_id=''):
     """
-    Collect basic system information.
+    Collect system information including enhanced diagnostics.
+
+    Args:
+        cluster_id: cluster identifier to include in the output.
 
     Returns:
-        dict with hostname, OS, Java version, etc.
+        dict with hostname, OS, Java version, processes, ports, ulimits, etc.
     """
     info = {
         'hostname': socket.getfqdn(),
         'ip_address': _get_ip_address(),
+        'cluster_id': cluster_id,
         'os': {
             'system': platform.system(),
             'release': platform.release(),
@@ -294,6 +299,12 @@ def collect_system_info():
         'java_version': _get_java_version(),
         'uptime_seconds': time.time() - psutil.boot_time(),
         'timestamp': datetime.now(tz=None).isoformat(),
+        'java_processes': _get_java_processes(),
+        'open_ports': _get_open_ports(),
+        'ulimits': _get_ulimits(),
+        'etc_hosts': _get_etc_hosts(),
+        'ntp_status': _get_ntp_status(),
+        'top_memory_processes': _get_top_memory_processes(),
     }
     return info
 
@@ -323,6 +334,420 @@ def _get_java_version():
         return 'not installed'
 
 
+def _get_java_processes():
+    """Get running Java processes with PID, RSS, CPU%, and command."""
+    try:
+        result = subprocess.run(
+            ['ps', 'aux'], capture_output=True, text=True, timeout=10,
+        )
+        processes = []
+        for line in result.stdout.split('\n'):
+            if 'java' in line.lower() and '[j]ava' not in line:
+                parts = line.split(None, 10)
+                if len(parts) >= 11:
+                    processes.append({
+                        'pid': parts[1],
+                        'cpu_percent': parts[2],
+                        'rss_kb': parts[5],
+                        'command': parts[10][:500],
+                    })
+        return processes
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return []
+
+
+def _get_open_ports():
+    """Get open TCP ports, focusing on known Hadoop service ports."""
+    known_ports = {8020, 8088, 8042, 16010, 16020, 2181, 50070, 50075,
+                   8443, 6080, 10000, 10002, 9083, 8050, 19888, 8188}
+    try:
+        result = subprocess.run(
+            ['ss', '-tlnp'], capture_output=True, text=True, timeout=10,
+        )
+        ports = []
+        for line in result.stdout.split('\n')[1:]:
+            parts = line.split()
+            if len(parts) >= 4:
+                addr = parts[3]
+                port_str = addr.rsplit(':', 1)[-1] if ':' in addr else ''
+                try:
+                    port = int(port_str)
+                    if port in known_ports:
+                        process = parts[6] if len(parts) > 6 else ''
+                        ports.append({'port': port, 'address': addr, 'process': process})
+                except ValueError:
+                    pass
+        return ports
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return []
+
+
+def _get_ulimits():
+    """Get ulimit values for the current user."""
+    try:
+        result = subprocess.run(
+            ['bash', '-c', 'ulimit -a'], capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() if result.stdout else ''
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return ''
+
+
+def _get_etc_hosts():
+    """Read /etc/hosts content (sanitized)."""
+    try:
+        with open('/etc/hosts', 'r') as f:
+            return f.read()
+    except (IOError, OSError):
+        return ''
+
+
+def _get_ntp_status():
+    """Check NTP/chrony time sync status."""
+    for cmd in (['chronyc', 'tracking'], ['ntpstat'], ['timedatectl', 'status']):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return {'source': cmd[0], 'output': result.stdout.strip()}
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return {'source': 'none', 'output': 'No NTP/chrony tool available'}
+
+
+def _get_top_memory_processes(n=10):
+    """Get top N processes by memory usage."""
+    try:
+        procs = []
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent']):
+            try:
+                info = proc.info
+                rss = info['memory_info'].rss if info.get('memory_info') else 0
+                procs.append({
+                    'pid': info['pid'],
+                    'name': info['name'],
+                    'rss_bytes': rss,
+                    'cpu_percent': info.get('cpu_percent', 0),
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        procs.sort(key=lambda x: x['rss_bytes'], reverse=True)
+        return procs[:n]
+    except Exception:
+        return []
+
+
+def collect_cluster_topology(ambari_url, cluster_name):
+    """
+    Collect cluster topology from Ambari REST API.
+
+    Returns:
+        dict with hosts, services, recent_operations, and cluster_info.
+    """
+    result = {'hosts': [], 'services': [], 'recent_operations': [], 'cluster_info': {}}
+
+    base = f"{ambari_url}/api/v1/clusters/{cluster_name}"
+
+    # Hosts
+    try:
+        resp = requests.get(f"{base}/hosts", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                host = item.get('Hosts', {})
+                result['hosts'].append({
+                    'hostname': host.get('host_name', ''),
+                    'os_type': host.get('os_type', ''),
+                    'cpu_count': host.get('cpu_count', 0),
+                    'total_mem': host.get('total_mem', 0),
+                    'rack_info': host.get('rack_info', ''),
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch cluster hosts: %s", e)
+
+    # Services
+    try:
+        resp = requests.get(f"{base}/services", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                svc = item.get('ServiceInfo', {})
+                result['services'].append({
+                    'service_name': svc.get('service_name', ''),
+                    'state': svc.get('state', ''),
+                    'maintenance_state': svc.get('maintenance_state', 'OFF'),
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch cluster services: %s", e)
+
+    # Recent operations
+    try:
+        resp = requests.get(f"{base}/requests?to=end&page_size=20", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                req_info = item.get('Requests', {})
+                result['recent_operations'].append({
+                    'id': req_info.get('id', 0),
+                    'request_context': req_info.get('request_context', ''),
+                    'request_status': req_info.get('request_status', ''),
+                    'start_time': req_info.get('start_time', 0),
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch recent operations: %s", e)
+
+    # Cluster info
+    try:
+        resp = requests.get(
+            f"{base}?fields=Clusters/desired_stack_id,Clusters/total_hosts",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            clusters = data.get('Clusters', {})
+            result['cluster_info'] = {
+                'cluster_name': clusters.get('cluster_name', cluster_name),
+                'desired_stack_id': clusters.get('desired_stack_id', ''),
+                'total_hosts': clusters.get('total_hosts', 0),
+            }
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch cluster info: %s", e)
+
+    return result
+
+
+def collect_service_health(ambari_url, cluster_name):
+    """
+    Collect service health snapshot from Ambari.
+
+    Returns:
+        dict with service_states and active_alerts.
+    """
+    result = {'service_states': [], 'active_alerts': []}
+    base = f"{ambari_url}/api/v1/clusters/{cluster_name}"
+
+    # Service states
+    try:
+        resp = requests.get(
+            f"{base}/services?fields=ServiceInfo/state,ServiceInfo/maintenance_state",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                svc = item.get('ServiceInfo', {})
+                result['service_states'].append({
+                    'service_name': svc.get('service_name', ''),
+                    'state': svc.get('state', ''),
+                    'maintenance_state': svc.get('maintenance_state', 'OFF'),
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch service health: %s", e)
+
+    # Active alerts
+    try:
+        resp = requests.get(
+            f"{base}/alerts?Alert/state=CRITICAL&Alert/state=WARNING",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                alert = item.get('Alert', {})
+                result['active_alerts'].append({
+                    'label': alert.get('label', ''),
+                    'state': alert.get('state', ''),
+                    'service_name': alert.get('service_name', ''),
+                    'component_name': alert.get('component_name', ''),
+                    'text': alert.get('text', '')[:500],
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch active alerts: %s", e)
+
+    return result
+
+
+def collect_hdfs_report():
+    """
+    Run hdfs dfsadmin -report and parse the output into a structured dict.
+    Only meaningful on NameNode hosts.
+
+    Returns:
+        dict with HDFS capacity, DataNode counts, etc.
+    """
+    try:
+        result = subprocess.run(
+            ['hdfs', 'dfsadmin', '-report'],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return {'error': result.stderr.strip(), 'raw': ''}
+
+        output = result.stdout
+        report = {'raw': output[:10000]}
+
+        # Parse key metrics
+        for line in output.split('\n'):
+            line = line.strip()
+            if line.startswith('Configured Capacity:'):
+                report['configured_capacity'] = _parse_bytes(line)
+            elif line.startswith('Present Capacity:'):
+                report['present_capacity'] = _parse_bytes(line)
+            elif line.startswith('DFS Remaining:'):
+                report['dfs_remaining'] = _parse_bytes(line)
+            elif line.startswith('DFS Used:'):
+                report['dfs_used'] = _parse_bytes(line)
+            elif line.startswith('Live datanodes'):
+                m = re.search(r'\((\d+)\)', line)
+                report['live_datanodes'] = int(m.group(1)) if m else 0
+            elif line.startswith('Dead datanodes'):
+                m = re.search(r'\((\d+)\)', line)
+                report['dead_datanodes'] = int(m.group(1)) if m else 0
+            elif 'Decommission' in line and 'datanodes' in line.lower():
+                m = re.search(r'\((\d+)\)', line)
+                report['decommissioning_datanodes'] = int(m.group(1)) if m else 0
+
+        return report
+    except FileNotFoundError:
+        return {'error': 'hdfs command not found'}
+    except subprocess.TimeoutExpired:
+        return {'error': 'hdfs dfsadmin -report timed out'}
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def _parse_bytes(line):
+    """Parse a byte count from an hdfs report line like 'DFS Used: 12345 (12 KB)'."""
+    m = re.search(r':\s*(\d+)', line)
+    return int(m.group(1)) if m else 0
+
+
+def collect_yarn_queues(ambari_url, cluster_name):
+    """
+    Collect YARN queue status from the ResourceManager REST API.
+
+    Returns:
+        dict with scheduler info and queue details.
+    """
+    result = {'scheduler_type': '', 'queues': []}
+
+    # Try YARN RM REST API directly (default port 8088)
+    # First try to get RM host from Ambari
+    rm_url = None
+    try:
+        resp = requests.get(
+            f"{ambari_url}/api/v1/clusters/{cluster_name}/services/YARN/components/RESOURCEMANAGER",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            host_components = data.get('host_components', [])
+            if host_components:
+                rm_host = host_components[0].get('HostRoles', {}).get('host_name', '')
+                if rm_host:
+                    rm_url = f"http://{rm_host}:8088"
+    except requests.RequestException:
+        pass
+
+    if not rm_url:
+        rm_url = "http://localhost:8088"
+
+    try:
+        resp = requests.get(f"{rm_url}/ws/v1/cluster/scheduler", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            scheduler = data.get('scheduler', {}).get('schedulerInfo', {})
+            result['scheduler_type'] = scheduler.get('type', '')
+
+            def _extract_queues(queue_info, prefix=''):
+                """Recursively extract queue information."""
+                queues_list = []
+                q = {
+                    'name': prefix + queue_info.get('queueName', ''),
+                    'capacity': queue_info.get('capacity', 0),
+                    'used_capacity': queue_info.get('usedCapacity', 0),
+                    'max_capacity': queue_info.get('maxCapacity', 0),
+                    'num_applications': queue_info.get('numApplications', 0),
+                    'num_pending_applications': queue_info.get('numPendingApplications', 0),
+                    'state': queue_info.get('state', ''),
+                }
+                queues_list.append(q)
+
+                child_queues = queue_info.get('queues', {}).get('queue', [])
+                if isinstance(child_queues, dict):
+                    child_queues = [child_queues]
+                for child in child_queues:
+                    queues_list.extend(
+                        _extract_queues(child, prefix=q['name'] + '.')
+                    )
+                return queues_list
+
+            result['queues'] = _extract_queues(scheduler)
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch YARN queues: %s", e)
+
+    return result
+
+
+def collect_alert_history(ambari_url, cluster_name, days=3):
+    """
+    Collect recent alert history from Ambari.
+
+    Returns:
+        list of recent alert state transitions.
+    """
+    alerts = []
+    try:
+        resp = requests.get(
+            f"{ambari_url}/api/v1/clusters/{cluster_name}"
+            f"/alert_histories?page_size=100&sortBy=AlertHistory/timestamp.desc",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                hist = item.get('AlertHistory', {})
+                alerts.append({
+                    'alert_definition_name': hist.get('definition_name', ''),
+                    'service_name': hist.get('service_name', ''),
+                    'component_name': hist.get('component_name', ''),
+                    'state': hist.get('state', ''),
+                    'timestamp': hist.get('timestamp', 0),
+                    'text': hist.get('text', '')[:500],
+                })
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch alert history: %s", e)
+
+    return alerts
+
+
+def collect_log_tails(log_path_patterns, tail_lines=200):
+    """
+    Collect the last N lines of each matching log file.
+
+    Args:
+        log_path_patterns: list of glob patterns.
+        tail_lines: number of lines to tail from each file.
+
+    Returns:
+        dict mapping file paths to their tail content.
+    """
+    tails = {}
+    for pattern in log_path_patterns:
+        for filepath in glob.glob(pattern):
+            if not os.path.isfile(filepath):
+                continue
+            try:
+                with open(filepath, 'r', errors='replace') as f:
+                    lines = f.readlines()
+                tail = lines[-tail_lines:] if len(lines) > tail_lines else lines
+                tails[filepath] = ''.join(tail)
+            except (IOError, OSError) as e:
+                logger.error("Failed to tail log %s: %s", filepath, e)
+    return tails
+
+
 def create_bundle(data, bundle_id, level, dest_dir):
     """
     Create a ZIP bundle with manifest from collected data.
@@ -342,13 +767,16 @@ def create_bundle(data, bundle_id, level, dest_dir):
     zip_filename = f'odpsc_agent_{hostname}_{timestamp}_{bundle_id[:8]}.zip'
     zip_path = os.path.join(dest_dir, zip_filename)
 
+    cluster_id = data.get('cluster_id', '')
+
     manifest = {
         'bundle_id': bundle_id,
         'hostname': hostname,
         'ip_address': _get_ip_address(),
+        'cluster_id': cluster_id,
         'level': level,
         'timestamp': datetime.now(tz=None).isoformat(),
-        'odpsc_version': '2.0',
+        'odpsc_version': '2.1',
         'contents': [],
     }
 
@@ -367,6 +795,21 @@ def create_bundle(data, bundle_id, level, dest_dir):
             zf.writestr('metrics.json', json.dumps(data.get('metrics', {}), indent=2))
             manifest['contents'].append('metrics.json')
 
+        # L1+: topology, service_health, log_tails
+        for key in ('topology', 'service_health', 'log_tails'):
+            if key in data and data[key]:
+                filename = f'{key}.json'
+                zf.writestr(filename, json.dumps(data[key], indent=2))
+                manifest['contents'].append(filename)
+
+        # L2+: include metrics, yarn_queues, hdfs_report, alert_history
+        if level in ('L2', 'L3'):
+            for key in ('yarn_queues', 'hdfs_report', 'alert_history'):
+                if key in data and data[key]:
+                    filename = f'{key}.json'
+                    zf.writestr(filename, json.dumps(data[key], indent=2))
+                    manifest['contents'].append(filename)
+
         # L3: include logs
         if level == 'L3':
             for filepath, content in data.get('logs', {}).items():
@@ -380,7 +823,7 @@ def create_bundle(data, bundle_id, level, dest_dir):
     return zip_path
 
 
-def upload_bundle(zip_path, master_url, api_key, bundle_id):
+def upload_bundle(zip_path, master_url, api_key, bundle_id, cluster_id=''):
     """
     Upload a bundle to the ODPSC Master with API key auth.
 
@@ -389,6 +832,7 @@ def upload_bundle(zip_path, master_url, api_key, bundle_id):
         master_url: base URL of the master (e.g. http://master:8085).
         api_key: API key for authentication.
         bundle_id: UUID of the bundle.
+        cluster_id: cluster identifier to include as header.
 
     Returns:
         tuple (success: bool, status: str)
@@ -398,6 +842,8 @@ def upload_bundle(zip_path, master_url, api_key, bundle_id):
         'Authorization': f'Bearer {api_key}',
         'X-ODPSC-Bundle-ID': bundle_id,
     }
+    if cluster_id:
+        headers['X-ODPSC-Cluster-ID'] = cluster_id
 
     try:
         with open(zip_path, 'rb') as f:
@@ -453,22 +899,33 @@ def run_collection(config, level=None):
 
     logger.info("Starting collection cycle (level=%s)", level)
     bundle_id = str(uuid.uuid4())
+    cluster_id = config.get('cluster_id', '')
+    ambari_url = config.get('ambari_server_url', 'http://localhost:8080')
+    cluster_name = config.get('cluster_name', 'cluster')
 
     try:
-        data = {}
+        data = {'cluster_id': cluster_id}
 
-        # L1: configs + system_info (always collected)
+        # L1: configs + system_info + topology + service_health + log_tails
         data['configs'] = collect_configs(config.get('config_paths', []))
-        data['system_info'] = collect_system_info()
+        data['system_info'] = collect_system_info(cluster_id=cluster_id)
+        data['topology'] = collect_cluster_topology(ambari_url, cluster_name)
+        data['service_health'] = collect_service_health(ambari_url, cluster_name)
+        data['log_tails'] = collect_log_tails(
+            config.get('log_paths', []), tail_lines=200,
+        )
 
-        # L2+: metrics
+        # L2+: metrics + yarn_queues + hdfs_report + alert_history
         if level in ('L2', 'L3'):
             data['metrics'] = collect_metrics(
-                ambari_server_url=config.get('ambari_server_url'),
-                cluster_name=config.get('cluster_name'),
+                ambari_server_url=ambari_url,
+                cluster_name=cluster_name,
             )
+            data['yarn_queues'] = collect_yarn_queues(ambari_url, cluster_name)
+            data['hdfs_report'] = collect_hdfs_report()
+            data['alert_history'] = collect_alert_history(ambari_url, cluster_name)
 
-        # L3: logs
+        # L3: full logs
         if level == 'L3':
             data['logs'] = collect_logs(
                 config.get('log_paths', []),
@@ -482,7 +939,9 @@ def run_collection(config, level=None):
         # Try immediate upload
         master_url = config.get('master_url', 'http://localhost:8085')
         api_key = config.get('api_key', '')
-        success, status = upload_bundle(zip_path, master_url, api_key, bundle_id)
+        success, status = upload_bundle(
+            zip_path, master_url, api_key, bundle_id, cluster_id=cluster_id,
+        )
 
         if success:
             _move_to_sent(zip_path)

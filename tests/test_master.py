@@ -651,12 +651,14 @@ class TestStatusEndpoint:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['status'] == 'running'
-        assert data['version'] == '2.0'
+        assert data['version'] == '2.1'
         assert 'collection_enabled' in data
         assert 'auto_send_enabled' in data
         assert 'bundle_count' in data
         assert 'pending_bundles' in data
         assert 'timestamp' in data
+        assert 'cluster_id' in data
+        assert 'audit_enabled' in data
 
     def test_status_requires_auth(self, client):
         resp = client.get('/api/v2/status')
@@ -714,3 +716,156 @@ class TestLocalStorage:
             }
             result = _aggregate_bundles(store, config)
             mock_hdfs.assert_not_called()
+
+
+class TestClusterIdStorage:
+    """Tests for cluster_id storage in BundleStore and status endpoint."""
+
+    def test_cluster_id_stored_in_bundle_store(self, tmp_dir):
+        db_path = os.path.join(tmp_dir, 'test.db')
+        store = BundleStore(db_path)
+        store.register_bundle(
+            'uuid-001', 'host1', 'file.zip', '/path/file.zip',
+            'L1', 1024, cluster_id='cluster-abc',
+        )
+
+        bundle = store.get_bundle('uuid-001')
+        assert bundle is not None
+        assert bundle['cluster_id'] == 'cluster-abc'
+
+    def test_cluster_id_in_status_response(self, client, auth_headers):
+        resp = client.get('/api/v2/status', headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert 'cluster_id' in data
+        assert data['cluster_id'] == 'test-cluster-id-abc123'
+
+    def test_cluster_id_extracted_from_upload(self, client, api_key_headers):
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zf:
+            zf.writestr('manifest.json', json.dumps({
+                'bundle_id': 'cluster-test-001',
+                'hostname': 'test-host',
+                'level': 'L1',
+                'cluster_id': 'cluster-from-manifest',
+            }))
+        zip_buffer.seek(0)
+
+        headers = dict(api_key_headers)
+        headers['X-ODPSC-Bundle-ID'] = 'cluster-test-001'
+        resp = client.post(
+            '/api/v2/bundles/upload',
+            data={'bundle': (zip_buffer, 'test.zip')},
+            headers=headers,
+            content_type='multipart/form-data',
+        )
+        assert resp.status_code == 200
+
+    def test_cluster_id_from_header_takes_precedence(self, client, api_key_headers):
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zf:
+            zf.writestr('manifest.json', json.dumps({
+                'bundle_id': 'cluster-hdr-001',
+                'hostname': 'test-host',
+                'level': 'L1',
+                'cluster_id': 'manifest-cluster',
+            }))
+        zip_buffer.seek(0)
+
+        headers = dict(api_key_headers)
+        headers['X-ODPSC-Bundle-ID'] = 'cluster-hdr-001'
+        headers['X-ODPSC-Cluster-ID'] = 'header-cluster'
+        resp = client.post(
+            '/api/v2/bundles/upload',
+            data={'bundle': (zip_buffer, 'test.zip')},
+            headers=headers,
+            content_type='multipart/form-data',
+        )
+        assert resp.status_code == 200
+
+
+class TestClusterIdInAggregation:
+    """Tests for cluster_id in aggregated bundles."""
+
+    def test_cluster_id_in_aggregated_metadata(self, tmp_dir):
+        db_path = os.path.join(tmp_dir, 'test.db')
+        bundles_dir = os.path.join(tmp_dir, 'bundles')
+        aggregated_dir = os.path.join(tmp_dir, 'aggregated')
+        os.makedirs(bundles_dir, exist_ok=True)
+        os.makedirs(aggregated_dir, exist_ok=True)
+
+        store = BundleStore(db_path)
+
+        zip_path = os.path.join(bundles_dir, 'agent_bundle.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('system_info.json', json.dumps({'hostname': 'node1'}))
+            zf.writestr('topology.json', json.dumps({'hosts': [{'hostname': 'node1'}]}))
+            zf.writestr('manifest.json', json.dumps({
+                'bundle_id': 'uuid-agg',
+                'hostname': 'node1',
+                'level': 'L1',
+            }))
+        store.register_bundle('uuid-agg', 'node1', 'agent_bundle.zip', zip_path,
+                              'L1', os.path.getsize(zip_path))
+
+        with patch('odpsc_master.AGGREGATED_DIR', aggregated_dir):
+            config = {
+                'max_bundle_size_mb': 500,
+                'encryption_key': '',
+                'hdfs_archive_enabled': False,
+                'cluster_id': 'my-cluster-id',
+            }
+            result = _aggregate_bundles(store, config)
+
+        assert result['status'] == 'aggregated'
+        with zipfile.ZipFile(result['output'], 'r') as zf:
+            metadata = json.loads(zf.read('metadata.json'))
+            assert metadata['cluster_id'] == 'my-cluster-id'
+            assert metadata['odpsc_version'] == '2.1'
+            # Topology should be included
+            assert 'topology.json' in zf.namelist()
+
+    def test_aggregation_includes_diagnostic_data(self, tmp_dir):
+        db_path = os.path.join(tmp_dir, 'test.db')
+        bundles_dir = os.path.join(tmp_dir, 'bundles')
+        aggregated_dir = os.path.join(tmp_dir, 'aggregated')
+        os.makedirs(bundles_dir, exist_ok=True)
+        os.makedirs(aggregated_dir, exist_ok=True)
+
+        store = BundleStore(db_path)
+
+        zip_path = os.path.join(bundles_dir, 'full_bundle.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('system_info.json', json.dumps({'hostname': 'node1'}))
+            zf.writestr('topology.json', json.dumps({'hosts': []}))
+            zf.writestr('service_health.json', json.dumps({'service_states': []}))
+            zf.writestr('log_tails.json', json.dumps({'/var/log/test.log': 'tail'}))
+            zf.writestr('yarn_queues.json', json.dumps({'queues': []}))
+            zf.writestr('hdfs_report.json', json.dumps({'live_datanodes': 3}))
+            zf.writestr('alert_history.json', json.dumps([{'state': 'OK'}]))
+            zf.writestr('manifest.json', json.dumps({
+                'bundle_id': 'uuid-full',
+                'hostname': 'node1',
+                'level': 'L2',
+            }))
+        store.register_bundle('uuid-full', 'node1', 'full_bundle.zip', zip_path,
+                              'L2', os.path.getsize(zip_path))
+
+        with patch('odpsc_master.AGGREGATED_DIR', aggregated_dir):
+            config = {
+                'max_bundle_size_mb': 500,
+                'encryption_key': '',
+                'hdfs_archive_enabled': False,
+                'cluster_id': 'cid-test',
+            }
+            result = _aggregate_bundles(store, config)
+
+        assert result['status'] == 'aggregated'
+        with zipfile.ZipFile(result['output'], 'r') as zf:
+            names = zf.namelist()
+            assert 'topology.json' in names
+            assert 'service_health.json' in names
+            assert 'log_tails.json' in names
+            assert 'yarn_queues.json' in names
+            assert 'hdfs_report.json' in names
+            assert 'alert_history.json' in names

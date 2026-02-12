@@ -154,6 +154,40 @@ def master_config(tmp_dir):
         'ambari_server_url': 'http://localhost:8080',
         'cluster_name': 'test-cluster',
         'gunicorn_workers': 2,
+        'cluster_id': 'test-cluster-id-abc123',
+        'audit_enabled': False,
+    }
+    config_path = os.path.join(tmp_dir, 'master_config.json')
+    with open(config_path, 'w') as f:
+        json.dump(config, f)
+    return config, config_path
+
+
+@pytest.fixture
+def master_config_audit_enabled(tmp_dir):
+    """Provide a test master configuration with audit enabled."""
+    config = {
+        'collection_enabled': True,
+        'auto_send_enabled': True,
+        'send_frequency': 'weekly',
+        'support_endpoint': 'https://support.odp.com/upload',
+        'support_token': 'test-token',
+        'hdfs_path': '/odpsc/diagnostics',
+        'hdfs_archive_enabled': False,
+        'master_port': 8085,
+        'admin_username': 'admin',
+        'admin_password': 'admin',
+        'admin_password_hash': '',
+        'api_key': 'test-api-key-12345',
+        'encryption_key': '',
+        'max_upload_size_mb': 100,
+        'max_bundle_size_mb': 500,
+        'log_paths': [],
+        'ambari_server_url': 'http://localhost:8080',
+        'cluster_name': 'test-cluster',
+        'gunicorn_workers': 2,
+        'cluster_id': 'test-cluster-id-abc123',
+        'audit_enabled': True,
     }
     config_path = os.path.join(tmp_dir, 'master_config.json')
     with open(config_path, 'w') as f:
@@ -175,11 +209,54 @@ def agent_config(tmp_dir):
         'log_retention_days': 7,
         'ambari_server_url': 'http://localhost:8080',
         'cluster_name': 'test-cluster',
+        'cluster_id': 'test-cluster-id-abc123',
     }
     config_path = os.path.join(tmp_dir, 'agent_config.json')
     with open(config_path, 'w') as f:
         json.dump(config, f)
     return config, config_path
+
+
+@pytest.fixture
+def sample_topology():
+    """Provide sample cluster topology data."""
+    return {
+        'hosts': [
+            {'hostname': 'node1.example.com', 'os_type': 'centos7', 'cpu_count': 8,
+             'total_mem': 32768, 'rack_info': '/default-rack'},
+            {'hostname': 'node2.example.com', 'os_type': 'centos7', 'cpu_count': 16,
+             'total_mem': 65536, 'rack_info': '/rack1'},
+        ],
+        'services': [
+            {'service_name': 'HDFS', 'state': 'STARTED', 'maintenance_state': 'OFF'},
+            {'service_name': 'YARN', 'state': 'STARTED', 'maintenance_state': 'OFF'},
+        ],
+        'recent_operations': [
+            {'id': 1, 'request_context': 'Start HDFS', 'request_status': 'COMPLETED',
+             'start_time': 1700000000},
+        ],
+        'cluster_info': {
+            'cluster_name': 'test-cluster',
+            'desired_stack_id': 'ODP-1.0',
+            'total_hosts': 2,
+        },
+    }
+
+
+@pytest.fixture
+def sample_service_health():
+    """Provide sample service health data."""
+    return {
+        'service_states': [
+            {'service_name': 'HDFS', 'state': 'STARTED', 'maintenance_state': 'OFF'},
+            {'service_name': 'YARN', 'state': 'STARTED', 'maintenance_state': 'OFF'},
+        ],
+        'active_alerts': [
+            {'label': 'DataNode Health', 'state': 'WARNING',
+             'service_name': 'HDFS', 'component_name': 'DATANODE',
+             'text': 'DataNode disk usage above 80%'},
+        ],
+    }
 
 
 @pytest.fixture
@@ -190,6 +267,7 @@ def master_app(master_config, tmp_dir, monkeypatch):
     monkeypatch.setattr('odpsc_master.BUNDLE_DIR', os.path.join(tmp_dir, 'bundles'))
     monkeypatch.setattr('odpsc_master.DB_DIR', os.path.join(tmp_dir, 'db'))
     monkeypatch.setattr('odpsc_master.DB_PATH', os.path.join(tmp_dir, 'db', 'bundles.db'))
+    monkeypatch.setattr('odpsc_master.AUDIT_DB_PATH', os.path.join(tmp_dir, 'db', 'audit.db'))
     monkeypatch.setattr('odpsc_master.AGGREGATED_DIR', os.path.join(tmp_dir, 'aggregated'))
     monkeypatch.setattr('odpsc_master.CONFIG_PATH', os.path.join(tmp_dir, 'master_config.json'))
 
@@ -197,6 +275,29 @@ def master_app(master_config, tmp_dir, monkeypatch):
     app = create_app(config)
     app.config['TESTING'] = True
     return app
+
+
+@pytest.fixture
+def audit_app(master_config_audit_enabled, tmp_dir, monkeypatch):
+    """Provide a Flask test app with audit enabled."""
+    config, _ = master_config_audit_enabled
+    monkeypatch.setattr('odpsc_master.BUNDLE_DIR', os.path.join(tmp_dir, 'bundles'))
+    monkeypatch.setattr('odpsc_master.DB_DIR', os.path.join(tmp_dir, 'db'))
+    monkeypatch.setattr('odpsc_master.DB_PATH', os.path.join(tmp_dir, 'db', 'bundles.db'))
+    monkeypatch.setattr('odpsc_master.AUDIT_DB_PATH', os.path.join(tmp_dir, 'db', 'audit.db'))
+    monkeypatch.setattr('odpsc_master.AGGREGATED_DIR', os.path.join(tmp_dir, 'aggregated'))
+    monkeypatch.setattr('odpsc_master.CONFIG_PATH', os.path.join(tmp_dir, 'master_config.json'))
+
+    from odpsc_master import create_app
+    app = create_app(config)
+    app.config['TESTING'] = True
+    return app
+
+
+@pytest.fixture
+def audit_client(audit_app):
+    """Provide a Flask test client with audit enabled."""
+    return audit_app.test_client()
 
 
 @pytest.fixture

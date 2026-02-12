@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives import hashes
 from flask import Flask, Response, jsonify, request, send_file
 
 from analyzer import analyze_logs, generate_text_report
+from audit import AuditStore, audit_event, generate_content_summary, is_audit_enabled
 
 LOG_DIR = '/var/log/odpsc'
 CONFIG_PATH = '/etc/odpsc/master_config.json'
@@ -36,6 +37,7 @@ MASTER_BASE_DIR = '/var/lib/odpsc/master'
 BUNDLE_DIR = os.path.join(MASTER_BASE_DIR, 'bundles')
 DB_DIR = os.path.join(MASTER_BASE_DIR, 'db')
 DB_PATH = os.path.join(DB_DIR, 'bundles.db')
+AUDIT_DB_PATH = os.path.join(DB_DIR, 'audit.db')
 AGGREGATED_DIR = os.path.join(MASTER_BASE_DIR, 'aggregated')
 
 logging.basicConfig(
@@ -69,6 +71,8 @@ DEFAULT_CONFIG = {
     'ambari_server_url': 'http://localhost:8080',
     'cluster_name': 'cluster',
     'gunicorn_workers': 2,
+    'cluster_id': '',
+    'audit_enabled': False,
 }
 
 
@@ -98,6 +102,7 @@ class BundleStore:
                     filepath TEXT NOT NULL,
                     level TEXT DEFAULT 'L1',
                     size_bytes INTEGER DEFAULT 0,
+                    cluster_id TEXT DEFAULT '',
                     received_at TEXT NOT NULL,
                     aggregated INTEGER DEFAULT 0,
                     aggregated_at TEXT
@@ -115,15 +120,16 @@ class BundleStore:
         finally:
             conn.close()
 
-    def register_bundle(self, bundle_id, hostname, filename, filepath, level='L1', size_bytes=0):
+    def register_bundle(self, bundle_id, hostname, filename, filepath, level='L1',
+                        size_bytes=0, cluster_id=''):
         """Register a new bundle. Returns True if new, False if duplicate."""
         conn = self._get_conn()
         try:
             conn.execute(
                 '''INSERT INTO bundles (bundle_id, hostname, filename, filepath, level,
-                   size_bytes, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                   size_bytes, cluster_id, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (bundle_id, hostname, filename, filepath, level, size_bytes,
-                 datetime.now(tz=None).isoformat()),
+                 cluster_id, datetime.now(tz=None).isoformat()),
             )
             conn.commit()
             return True
@@ -357,6 +363,11 @@ def create_app(config=None):
     bundle_store = BundleStore(db_path=DB_PATH)
     app.config['BUNDLE_STORE'] = bundle_store
 
+    # Initialize audit store if audit is enabled
+    if is_audit_enabled(config):
+        audit_store = AuditStore(db_path=AUDIT_DB_PATH)
+        app.config['AUDIT_STORE'] = audit_store
+
     def get_config():
         return app.config['ODPSC']
 
@@ -454,20 +465,31 @@ def create_app(config=None):
         bundle_file.save(save_path)
         size_bytes = os.path.getsize(save_path)
 
-        # Extract hostname and level from manifest if possible
+        # Extract hostname, level, and cluster_id from manifest if possible
         hostname = 'unknown'
         level = 'L1'
+        cluster_id = request.headers.get('X-ODPSC-Cluster-ID', '')
         try:
             with zipfile.ZipFile(save_path, 'r') as zf:
                 if 'manifest.json' in zf.namelist():
                     manifest = json.loads(zf.read('manifest.json'))
                     hostname = manifest.get('hostname', 'unknown')
                     level = manifest.get('level', 'L1')
+                    if not cluster_id:
+                        cluster_id = manifest.get('cluster_id', '')
         except (zipfile.BadZipFile, json.JSONDecodeError, KeyError):
             pass
 
-        store.register_bundle(bundle_id, hostname, safe_name, save_path, level, size_bytes)
-        logger.info("Received agent bundle: %s (id=%s, host=%s)", save_path, bundle_id, hostname)
+        store.register_bundle(bundle_id, hostname, safe_name, save_path, level, size_bytes,
+                              cluster_id=cluster_id)
+        logger.info("Received agent bundle: %s (id=%s, host=%s, cluster=%s)",
+                     save_path, bundle_id, hostname, cluster_id)
+
+        audit_event(app, 'bundle_received',
+                    bundle_id=bundle_id, cluster_id=cluster_id,
+                    hostname=hostname, direction='inbound',
+                    size_bytes=size_bytes,
+                    content_summary=generate_content_summary(save_path))
 
         return jsonify({
             'status': 'received',
@@ -539,6 +561,13 @@ def create_app(config=None):
         try:
             store = app.config['BUNDLE_STORE']
             result = _aggregate_bundles(store, cfg)
+            if result.get('status') == 'aggregated':
+                audit_event(app, 'bundle_aggregated',
+                            cluster_id=cfg.get('cluster_id', ''),
+                            details=json.dumps({
+                                'agent_count': result.get('agent_count', 0),
+                                'bundles_processed': result.get('bundles_processed', 0),
+                            }))
             return jsonify(result)
         except Exception as e:
             logger.exception("Aggregation failed: %s", e)
@@ -572,7 +601,7 @@ def create_app(config=None):
             'admin_username', 'encryption_key',
             'log_retention_days', 'max_log_size_mb',
             'max_upload_size_mb', 'max_bundle_size_mb',
-            'bundle_level',
+            'bundle_level', 'audit_enabled',
         }
 
         applied = {}
@@ -599,14 +628,61 @@ def create_app(config=None):
 
         return jsonify({
             'status': 'running',
-            'version': '2.0',
+            'version': '2.1',
+            'cluster_id': cfg.get('cluster_id', ''),
             'collection_enabled': cfg.get('collection_enabled', True),
             'auto_send_enabled': cfg.get('auto_send_enabled', True),
             'send_frequency': cfg.get('send_frequency', 'weekly'),
             'hdfs_archive_enabled': cfg.get('hdfs_archive_enabled', False),
+            'audit_enabled': cfg.get('audit_enabled', False),
             'bundle_count': store.get_bundle_count(),
             'pending_bundles': len(store.get_pending_bundles()),
             'timestamp': datetime.now(tz=None).isoformat(),
+        })
+
+    @app.route('/api/v2/audit', methods=['GET'])
+    @require_auth
+    def get_audit_events():
+        """Return paginated audit events."""
+        cfg = get_config()
+        if not is_audit_enabled(cfg):
+            return jsonify({'error': 'Audit is not enabled'}), 403
+
+        audit_store = app.config.get('AUDIT_STORE')
+        if audit_store is None:
+            return jsonify({'error': 'Audit store not initialized'}), 500
+
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        event_type = request.args.get('event_type', None)
+
+        events = audit_store.get_events(limit=limit, offset=offset,
+                                        event_type=event_type)
+        total = audit_store.get_event_count(event_type=event_type)
+
+        return jsonify({
+            'events': events,
+            'count': len(events),
+            'total': total,
+        })
+
+    @app.route('/api/v2/audit/<bundle_id>', methods=['GET'])
+    @require_auth
+    def get_audit_for_bundle(bundle_id):
+        """Return audit events for a specific bundle."""
+        cfg = get_config()
+        if not is_audit_enabled(cfg):
+            return jsonify({'error': 'Audit is not enabled'}), 403
+
+        audit_store = app.config.get('AUDIT_STORE')
+        if audit_store is None:
+            return jsonify({'error': 'Audit store not initialized'}), 500
+
+        events = audit_store.get_events_for_bundle(bundle_id)
+        return jsonify({
+            'bundle_id': bundle_id,
+            'events': events,
+            'count': len(events),
         })
 
     return app
@@ -662,8 +738,15 @@ def _aggregate_bundles(store, config):
     all_metrics = []
     all_configs = {}
     all_system_info = []
+    all_topology = []
+    all_service_health = []
+    all_log_tails = {}
+    all_yarn_queues = []
+    all_hdfs_report = []
+    all_alert_history = []
     agent_count = 0
     aggregated_ids = []
+    cluster_id = config.get('cluster_id', '')
     current_size = 0
 
     for bundle_info in pending:
@@ -700,6 +783,39 @@ def _aggregate_bundles(store, config):
                             all_system_info.append(json.loads(content))
                         except json.JSONDecodeError:
                             pass
+                    elif name == 'topology.json':
+                        try:
+                            all_topology.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'service_health.json':
+                        try:
+                            all_service_health.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'log_tails.json':
+                        try:
+                            tails = json.loads(content)
+                            for k, v in tails.items():
+                                tail_key = f"{bundle_info['hostname']}:{k}"
+                                all_log_tails[tail_key] = v
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'yarn_queues.json':
+                        try:
+                            all_yarn_queues.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'hdfs_report.json':
+                        try:
+                            all_hdfs_report.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
+                    elif name == 'alert_history.json':
+                        try:
+                            all_alert_history.append(json.loads(content))
+                        except json.JSONDecodeError:
+                            pass
 
             agent_count += 1
             aggregated_ids.append(bundle_info['bundle_id'])
@@ -729,11 +845,25 @@ def _aggregate_bundles(store, config):
         zf.writestr('analysis.json', json.dumps(analysis, indent=2))
         zf.writestr('analysis_report.txt', analysis_report)
 
+        if all_topology:
+            zf.writestr('topology.json', json.dumps(all_topology, indent=2))
+        if all_service_health:
+            zf.writestr('service_health.json', json.dumps(all_service_health, indent=2))
+        if all_log_tails:
+            zf.writestr('log_tails.json', json.dumps(all_log_tails, indent=2))
+        if all_yarn_queues:
+            zf.writestr('yarn_queues.json', json.dumps(all_yarn_queues, indent=2))
+        if all_hdfs_report:
+            zf.writestr('hdfs_report.json', json.dumps(all_hdfs_report, indent=2))
+        if all_alert_history:
+            zf.writestr('alert_history.json', json.dumps(all_alert_history, indent=2))
+
         metadata = {
             'created': timestamp,
             'agent_count': agent_count,
             'bundle_ids': aggregated_ids,
-            'odpsc_version': '2.0',
+            'cluster_id': cluster_id,
+            'odpsc_version': '2.1',
         }
         zf.writestr('metadata.json', json.dumps(metadata, indent=2))
 

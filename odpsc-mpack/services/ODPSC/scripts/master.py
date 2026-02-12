@@ -83,7 +83,7 @@ class OdpscMaster(Script):
         service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         resources_src = os.path.join(service_dir, 'resources')
 
-        for filename in ('odpsc_master.py', 'analyzer.py', 'wsgi.py', 'requirements.txt'):
+        for filename in ('odpsc_master.py', 'analyzer.py', 'wsgi.py', 'audit.py', 'requirements.txt'):
             src = os.path.join(resources_src, filename)
             dst = os.path.join(RESOURCES_DIR, filename)
             if os.path.exists(src):
@@ -92,10 +92,23 @@ class OdpscMaster(Script):
         # Generate API key if not set
         self._ensure_api_key(env)
 
+        # Generate cluster_id if not set
+        self._ensure_cluster_id(env)
+
         # Generate bcrypt password hash for admin
         self._ensure_password_hash(env)
 
         Logger.info("ODPSC Master v2 installed successfully")
+
+    def _ensure_cluster_id(self, env):
+        """Generate a unique cluster ID if not already set."""
+        config = self.get_config()
+        odpsc_site = config['configurations'].get('odpsc-site', {})
+        if not odpsc_site.get('cluster_id'):
+            cluster_id = secrets.token_hex(32)
+            Logger.info("Generated new cluster ID: %s" % cluster_id[:16] + "...")
+            id_file = os.path.join(CONFIG_DIR, 'cluster_id')
+            File(id_file, content=cluster_id, owner=ODPSC_USER, group=ODPSC_USER, mode=0o644)
 
     def _ensure_api_key(self, env):
         """Generate API key if not already set."""
@@ -140,6 +153,14 @@ class OdpscMaster(Script):
                 with open(key_file, 'r') as f:
                     api_key = f.read().strip()
 
+        # Read or generate cluster_id
+        cluster_id = odpsc_site.get('cluster_id', '')
+        if not cluster_id:
+            id_file = os.path.join(CONFIG_DIR, 'cluster_id')
+            if os.path.exists(id_file):
+                with open(id_file, 'r') as f:
+                    cluster_id = f.read().strip()
+
         # Generate password hash
         password_hash = self._ensure_password_hash(env)
 
@@ -164,6 +185,8 @@ class OdpscMaster(Script):
             'cluster_name': odpsc_site.get('cluster_name', 'cluster'),
             'gunicorn_workers': int(odpsc_site.get('gunicorn_workers', 2)),
             'bundle_level': odpsc_site.get('bundle_level', 'L1'),
+            'cluster_id': cluster_id,
+            'audit_enabled': odpsc_site.get('audit_enabled', 'false').lower() == 'true',
         }
 
         config_path = os.path.join(CONFIG_DIR, 'master_config.json')

@@ -117,6 +117,7 @@ class OdpscAgent(Script):
             'log_retention_days': int(odpsc_site.get('log_retention_days', 7)),
             'ambari_server_url': odpsc_site.get('ambari_server_url', 'http://localhost:8080'),
             'cluster_name': odpsc_site.get('cluster_name', 'cluster'),
+            'cluster_id': odpsc_site.get('cluster_id', ''),
         }
 
         config_path = os.path.join(CONFIG_DIR, 'agent_config.json')

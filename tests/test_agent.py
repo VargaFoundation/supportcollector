@@ -16,10 +16,16 @@ import pytest
 
 from odpsc_agent import (
     cleanup_sent,
+    collect_alert_history,
+    collect_cluster_topology,
     collect_configs,
+    collect_hdfs_report,
+    collect_log_tails,
     collect_logs,
     collect_metrics,
+    collect_service_health,
     collect_system_info,
+    collect_yarn_queues,
     create_bundle,
     ensure_dirs,
     load_config,
@@ -306,7 +312,7 @@ class TestBundleManifest:
             manifest = json.loads(zf.read('manifest.json'))
             assert manifest['bundle_id'] == bundle_id
             assert manifest['level'] == 'L1'
-            assert manifest['odpsc_version'] == '2.0'
+            assert manifest['odpsc_version'] == '2.1'
             assert 'hostname' in manifest
             assert 'timestamp' in manifest
 
@@ -685,3 +691,419 @@ class TestRunCollection:
         config = {'collection_enabled': True, 'bundle_level': 'L1'}
         result = run_collection(config, level='L4')
         assert result is None
+
+
+class TestClusterIdInBundle:
+    """Tests for cluster_id propagation through bundles."""
+
+    def test_cluster_id_in_manifest(self, tmp_dir):
+        data = {
+            'configs': {},
+            'system_info': {'hostname': 'testhost'},
+            'cluster_id': 'my-cluster-id-123',
+        }
+        bundle_id = str(uuid.uuid4())
+        zip_path = create_bundle(data, bundle_id, 'L1', tmp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            manifest = json.loads(zf.read('manifest.json'))
+            assert manifest['cluster_id'] == 'my-cluster-id-123'
+            assert manifest['odpsc_version'] == '2.1'
+
+    def test_cluster_id_in_system_info(self):
+        info = collect_system_info(cluster_id='test-cid')
+        assert info['cluster_id'] == 'test-cid'
+
+    @patch('odpsc_agent.requests.post')
+    def test_cluster_id_in_upload_headers(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'status': 'received'}
+        mock_post.return_value = mock_resp
+
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as f:
+            with zipfile.ZipFile(f, 'w') as zf:
+                zf.writestr('data.json', '{}')
+            zip_path = f.name
+
+        try:
+            success, status = upload_bundle(
+                zip_path, 'http://master:8085', 'key', 'bid-001',
+                cluster_id='cluster-xyz',
+            )
+            assert success is True
+            call_args = mock_post.call_args
+            headers = call_args[1].get('headers', {})
+            assert headers['X-ODPSC-Cluster-ID'] == 'cluster-xyz'
+        finally:
+            os.unlink(zip_path)
+
+    @patch('odpsc_agent.requests.post')
+    def test_no_cluster_id_header_when_empty(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'status': 'received'}
+        mock_post.return_value = mock_resp
+
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as f:
+            with zipfile.ZipFile(f, 'w') as zf:
+                zf.writestr('data.json', '{}')
+            zip_path = f.name
+
+        try:
+            upload_bundle(zip_path, 'http://master:8085', 'key', 'bid-001')
+            call_args = mock_post.call_args
+            headers = call_args[1].get('headers', {})
+            assert 'X-ODPSC-Cluster-ID' not in headers
+        finally:
+            os.unlink(zip_path)
+
+
+class TestCollectClusterTopology:
+    """Tests for cluster topology collection."""
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_topology_success(self, mock_get):
+        def mock_responses(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if '/hosts' in url:
+                resp.json.return_value = {
+                    'items': [{'Hosts': {
+                        'host_name': 'node1', 'os_type': 'centos7',
+                        'cpu_count': 8, 'total_mem': 32768, 'rack_info': '/rack1',
+                    }}],
+                }
+            elif '/services' in url:
+                resp.json.return_value = {
+                    'items': [{'ServiceInfo': {
+                        'service_name': 'HDFS', 'state': 'STARTED',
+                        'maintenance_state': 'OFF',
+                    }}],
+                }
+            elif '/requests' in url:
+                resp.json.return_value = {
+                    'items': [{'Requests': {
+                        'id': 1, 'request_context': 'Start All',
+                        'request_status': 'COMPLETED', 'start_time': 1000,
+                    }}],
+                }
+            elif 'fields=' in url:
+                resp.json.return_value = {
+                    'Clusters': {
+                        'cluster_name': 'test', 'desired_stack_id': 'ODP-1.0',
+                        'total_hosts': 1,
+                    },
+                }
+            return resp
+
+        mock_get.side_effect = mock_responses
+
+        result = collect_cluster_topology('http://ambari:8080', 'test')
+        assert len(result['hosts']) == 1
+        assert result['hosts'][0]['hostname'] == 'node1'
+        assert len(result['services']) == 1
+        assert len(result['recent_operations']) == 1
+        assert result['cluster_info']['total_hosts'] == 1
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_topology_failure(self, mock_get):
+        import requests as req
+        mock_get.side_effect = req.RequestException("fail")
+
+        result = collect_cluster_topology('http://ambari:8080', 'test')
+        assert result['hosts'] == []
+        assert result['services'] == []
+        assert result['recent_operations'] == []
+        assert result['cluster_info'] == {}
+
+
+class TestCollectServiceHealth:
+    """Tests for service health collection."""
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_service_health_success(self, mock_get):
+        def mock_responses(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if '/alerts' in url:
+                resp.json.return_value = {
+                    'items': [{'Alert': {
+                        'label': 'DN Health', 'state': 'WARNING',
+                        'service_name': 'HDFS', 'component_name': 'DATANODE',
+                        'text': 'Disk 80%',
+                    }}],
+                }
+            else:
+                resp.json.return_value = {
+                    'items': [{'ServiceInfo': {
+                        'service_name': 'HDFS', 'state': 'STARTED',
+                        'maintenance_state': 'OFF',
+                    }}],
+                }
+            return resp
+
+        mock_get.side_effect = mock_responses
+
+        result = collect_service_health('http://ambari:8080', 'test')
+        assert len(result['service_states']) == 1
+        assert len(result['active_alerts']) == 1
+        assert result['active_alerts'][0]['state'] == 'WARNING'
+
+
+class TestCollectHdfsReport:
+    """Tests for HDFS report collection."""
+
+    @patch('odpsc_agent.subprocess.run')
+    def test_collect_hdfs_report_success(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "Configured Capacity: 1073741824 (1 GB)\n"
+                "Present Capacity: 1073741824 (1 GB)\n"
+                "DFS Remaining: 536870912 (512 MB)\n"
+                "DFS Used: 536870912 (512 MB)\n"
+                "Live datanodes (3):\n"
+                "Dead datanodes (1):\n"
+            ),
+            stderr='',
+        )
+
+        result = collect_hdfs_report()
+        assert result['configured_capacity'] == 1073741824
+        assert result['dfs_remaining'] == 536870912
+        assert result['live_datanodes'] == 3
+        assert result['dead_datanodes'] == 1
+
+    @patch('odpsc_agent.subprocess.run')
+    def test_collect_hdfs_report_not_found(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        result = collect_hdfs_report()
+        assert 'error' in result
+        assert 'not found' in result['error']
+
+    @patch('odpsc_agent.subprocess.run')
+    def test_collect_hdfs_report_timeout(self, mock_run):
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired('hdfs', 30)
+        result = collect_hdfs_report()
+        assert 'error' in result
+        assert 'timed out' in result['error']
+
+
+class TestCollectYarnQueues:
+    """Tests for YARN queue collection."""
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_yarn_queues_success(self, mock_get):
+        def mock_responses(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if 'RESOURCEMANAGER' in url:
+                resp.json.return_value = {
+                    'host_components': [{'HostRoles': {'host_name': 'rm-host'}}],
+                }
+            elif '/scheduler' in url:
+                resp.json.return_value = {
+                    'scheduler': {'schedulerInfo': {
+                        'type': 'capacityScheduler',
+                        'queueName': 'root',
+                        'capacity': 100, 'usedCapacity': 50,
+                        'maxCapacity': 100, 'numApplications': 5,
+                        'numPendingApplications': 2, 'state': 'RUNNING',
+                        'queues': {'queue': [
+                            {'queueName': 'default', 'capacity': 100,
+                             'usedCapacity': 50, 'maxCapacity': 100,
+                             'numApplications': 5, 'numPendingApplications': 2,
+                             'state': 'RUNNING'},
+                        ]},
+                    }},
+                }
+            return resp
+
+        mock_get.side_effect = mock_responses
+
+        result = collect_yarn_queues('http://ambari:8080', 'test')
+        assert result['scheduler_type'] == 'capacityScheduler'
+        assert len(result['queues']) >= 1
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_yarn_queues_failure(self, mock_get):
+        import requests as req
+        mock_get.side_effect = req.RequestException("fail")
+
+        result = collect_yarn_queues('http://ambari:8080', 'test')
+        assert result['queues'] == []
+
+
+class TestCollectAlertHistory:
+    """Tests for alert history collection."""
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_alert_history_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'items': [{
+                'AlertHistory': {
+                    'definition_name': 'datanode_health',
+                    'service_name': 'HDFS',
+                    'component_name': 'DATANODE',
+                    'state': 'WARNING',
+                    'timestamp': 1700000000,
+                    'text': 'DataNode process is not running',
+                },
+            }],
+        }
+        mock_get.return_value = mock_resp
+
+        result = collect_alert_history('http://ambari:8080', 'test')
+        assert len(result) == 1
+        assert result[0]['alert_definition_name'] == 'datanode_health'
+        assert result[0]['state'] == 'WARNING'
+
+    @patch('odpsc_agent.requests.get')
+    def test_collect_alert_history_failure(self, mock_get):
+        import requests as req
+        mock_get.side_effect = req.RequestException("fail")
+        result = collect_alert_history('http://ambari:8080', 'test')
+        assert result == []
+
+
+class TestCollectLogTails:
+    """Tests for log tail collection."""
+
+    def test_collect_log_tails(self, tmp_dir):
+        log_file = os.path.join(tmp_dir, 'test.log')
+        lines = [f'Line {i}\n' for i in range(500)]
+        with open(log_file, 'w') as f:
+            f.writelines(lines)
+
+        tails = collect_log_tails([os.path.join(tmp_dir, '*.log')], tail_lines=200)
+        assert len(tails) == 1
+        content = list(tails.values())[0]
+        # Should have the last 200 lines
+        assert 'Line 300\n' in content
+        assert 'Line 499\n' in content
+
+    def test_collect_log_tails_short_file(self, tmp_dir):
+        log_file = os.path.join(tmp_dir, 'short.log')
+        with open(log_file, 'w') as f:
+            f.write('Only line\n')
+
+        tails = collect_log_tails([os.path.join(tmp_dir, '*.log')], tail_lines=200)
+        assert len(tails) == 1
+        assert 'Only line' in list(tails.values())[0]
+
+    def test_collect_log_tails_no_files(self):
+        tails = collect_log_tails(['/nonexistent/*.log'])
+        assert len(tails) == 0
+
+    def test_collect_log_tails_skips_directories(self, tmp_dir):
+        os.makedirs(os.path.join(tmp_dir, 'subdir.log'), exist_ok=True)
+        tails = collect_log_tails([os.path.join(tmp_dir, '*.log')])
+        assert len(tails) == 0
+
+
+class TestEnhancedSystemInfo:
+    """Tests for enhanced system info collection."""
+
+    def test_enhanced_system_info_structure(self):
+        info = collect_system_info(cluster_id='test-cluster-123')
+        assert info['cluster_id'] == 'test-cluster-123'
+        assert 'java_processes' in info
+        assert 'open_ports' in info
+        assert 'ulimits' in info
+        assert 'etc_hosts' in info
+        assert 'ntp_status' in info
+        assert 'top_memory_processes' in info
+        assert isinstance(info['java_processes'], list)
+        assert isinstance(info['open_ports'], list)
+        assert isinstance(info['top_memory_processes'], list)
+
+    def test_system_info_has_basic_fields(self):
+        info = collect_system_info()
+        assert 'hostname' in info
+        assert 'os' in info
+        assert 'python_version' in info
+        assert 'java_version' in info
+        assert 'uptime_seconds' in info
+        assert 'timestamp' in info
+
+    def test_system_info_default_cluster_id(self):
+        info = collect_system_info()
+        assert info['cluster_id'] == ''
+
+
+class TestBundleLevelIntegration:
+    """Tests for diagnostic data in bundle levels."""
+
+    def test_l1_includes_topology_and_health(self, tmp_dir):
+        data = {
+            'configs': {},
+            'system_info': {'hostname': 'testhost'},
+            'cluster_id': 'cid-123',
+            'topology': {'hosts': [{'hostname': 'node1'}], 'services': []},
+            'service_health': {'service_states': [], 'active_alerts': []},
+            'log_tails': {'/var/log/test.log': 'last lines...'},
+        }
+        bundle_id = str(uuid.uuid4())
+        zip_path = create_bundle(data, bundle_id, 'L1', tmp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            assert 'topology.json' in names
+            assert 'service_health.json' in names
+            assert 'log_tails.json' in names
+            # L1 should NOT have L2 files
+            assert 'yarn_queues.json' not in names
+            assert 'hdfs_report.json' not in names
+            assert 'alert_history.json' not in names
+
+    def test_l2_includes_diagnostics(self, tmp_dir):
+        data = {
+            'configs': {},
+            'system_info': {'hostname': 'testhost'},
+            'cluster_id': 'cid-123',
+            'topology': {'hosts': []},
+            'service_health': {'service_states': []},
+            'log_tails': {},
+            'metrics': {'cpu_percent': 50},
+            'yarn_queues': {'scheduler_type': 'capacity', 'queues': []},
+            'hdfs_report': {'live_datanodes': 3},
+            'alert_history': [{'state': 'WARNING'}],
+        }
+        bundle_id = str(uuid.uuid4())
+        zip_path = create_bundle(data, bundle_id, 'L2', tmp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            assert 'metrics.json' in names
+            assert 'yarn_queues.json' in names
+            assert 'hdfs_report.json' in names
+            assert 'alert_history.json' in names
+            assert 'topology.json' in names
+
+    def test_l3_includes_everything(self, tmp_dir):
+        data = {
+            'configs': {},
+            'system_info': {'hostname': 'testhost'},
+            'cluster_id': 'cid-123',
+            'topology': {'hosts': []},
+            'service_health': {'service_states': []},
+            'log_tails': {},
+            'metrics': {'cpu_percent': 50},
+            'yarn_queues': {'scheduler_type': 'capacity', 'queues': []},
+            'hdfs_report': {'live_datanodes': 3},
+            'alert_history': [{'state': 'WARNING'}],
+            'logs': {'/var/log/test.log': 'ERROR test'},
+        }
+        bundle_id = str(uuid.uuid4())
+        zip_path = create_bundle(data, bundle_id, 'L3', tmp_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            assert 'metrics.json' in names
+            assert any('logs/' in n for n in names)
+            assert 'yarn_queues.json' in names
+            assert 'topology.json' in names
