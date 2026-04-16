@@ -76,7 +76,7 @@ class OdpscAgent(Script):
         service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         resources_src = os.path.join(service_dir, 'files')
 
-        for filename in ('odpsc_agent.py', 'requirements.txt'):
+        for filename in ('odpsc_agent.py', 'collectors.py', 'requirements.txt'):
             src = os.path.join(resources_src, filename)
             dst = os.path.join(RESOURCES_DIR, filename)
             if os.path.exists(src):
@@ -115,6 +115,9 @@ class OdpscAgent(Script):
             'log_retention_days': int(odpsc_site.get('log_retention_days', 7)),
             'ambari_server_url': odpsc_site.get('ambari_server_url', 'http://localhost:8080'),
             'cluster_name': odpsc_site.get('cluster_name', 'cluster'),
+            'ambari_ssl_verify': odpsc_site.get('ambari_ssl_verify', 'true').lower() == 'true',
+            'ambari_username': odpsc_site.get('ambari_username', 'admin'),
+            'ambari_password': odpsc_site.get('ambari_password', ''),
         }
 
         config_path = os.path.join(CONFIG_DIR, 'agent_config.json')

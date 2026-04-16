@@ -692,6 +692,7 @@ def _trigger_agent_collection(config, level='L1'):
     """Trigger agent collection via Ambari custom command API."""
     ambari_url = config.get('ambari_server_url', 'http://localhost:8080')
     cluster_name = config.get('cluster_name', 'cluster')
+    ssl_verify = config.get('ambari_ssl_verify', True)
 
     try:
         url = f"{ambari_url}/api/v1/clusters/{cluster_name}/requests"
@@ -707,7 +708,7 @@ def _trigger_agent_collection(config, level='L1'):
                 "hosts": "",
             }],
         }
-        resp = requests.post(url, json=payload, timeout=30)
+        resp = requests.post(url, json=payload, timeout=30, verify=ssl_verify)
         logger.info(
             "Triggered agent collection via Ambari (status %d, level %s)",
             resp.status_code, level,

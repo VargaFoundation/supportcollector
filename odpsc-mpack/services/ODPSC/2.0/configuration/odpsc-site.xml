@@ -150,6 +150,27 @@
   </property>
 
   <property>
+    <name>ambari_username</name>
+    <value>admin</value>
+    <description>Username for Ambari API authentication.</description>
+    <display-name>Ambari Username</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>ambari_password</name>
+    <value></value>
+    <description>Password for Ambari API authentication.</description>
+    <display-name>Ambari Password</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
     <name>cluster_name</name>
     <value>cluster</value>
     <description>Ambari cluster name.</description>
@@ -243,6 +264,47 @@
     <display-name>Attachment OTP</display-name>
     <value-attributes>
       <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_enabled</name>
+    <value>false</value>
+    <description>Enable sending aggregated bundles to the SupportPlane application. Requires supportplane_endpoint to be configured.</description>
+    <display-name>SupportPlane Integration Enabled</display-name>
+    <value-attributes>
+      <type>boolean</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_endpoint</name>
+    <value></value>
+    <description>SupportPlane bundle upload URL (e.g. http://supportplane-host:8081/api/v1/bundles/upload).</description>
+    <display-name>SupportPlane Endpoint URL</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>supportplane_token</name>
+    <value></value>
+    <description>Optional bearer token for authenticating with SupportPlane.</description>
+    <display-name>SupportPlane API Token</display-name>
+    <property-type>PASSWORD</property-type>
+    <value-attributes>
+      <type>password</type>
+    </value-attributes>
+  </property>
+
+  <property>
+    <name>ambari_ssl_verify</name>
+    <value>true</value>
+    <description>Whether to verify SSL certificates when communicating with the Ambari server. Set to false for self-signed certificates.</description>
+    <display-name>Ambari SSL Verification</display-name>
+    <value-attributes>
+      <type>boolean</type>
     </value-attributes>
   </property>
 </configuration>

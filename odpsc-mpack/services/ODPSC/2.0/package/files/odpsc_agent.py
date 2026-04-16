@@ -32,7 +32,20 @@ from collectors import (
     collect_gc_logs,
     collect_kernel_params,
     collect_config_drift,
+    collect_hbase_metrics,
+    collect_impala_metrics,
+    collect_kudu_metrics,
+    collect_hive_metrics,
+    collect_zookeeper_metrics,
+    collect_atlas_metrics,
+    collect_ranger_metrics,
+    collect_nifi_metrics,
+    collect_kafka_metrics,
+    collect_spark_metrics,
+    collect_oozie_metrics,
+    collect_solr_metrics,
 )
+from benchmarks import run_all_benchmarks
 
 LOG_DIR = '/var/log/odpsc'
 CONFIG_PATH = '/etc/odpsc/agent_config.json'
@@ -72,6 +85,9 @@ DEFAULT_CONFIG = {
     'ambari_server_url': 'http://localhost:8080',
     'cluster_name': 'cluster',
     'cluster_id': '',
+    'ambari_ssl_verify': True,
+    'ambari_username': 'admin',
+    'ambari_password': '',
 }
 
 # Sensitive data patterns for masking
@@ -169,7 +185,7 @@ def collect_logs(log_path_patterns, max_size_mb=1, retention_days=7):
     return logs
 
 
-def collect_metrics(ambari_server_url=None, cluster_name=None):
+def collect_metrics(ambari_server_url=None, cluster_name=None, ssl_verify=True, auth=None):
     """
     Collect system metrics using psutil and optionally from Ambari Metrics API.
 
@@ -221,7 +237,7 @@ def collect_metrics(ambari_server_url=None, cluster_name=None):
                 f"{ambari_server_url}/api/v1/clusters/{cluster_name}"
                 f"/hosts/{socket.getfqdn()}/host_components"
             )
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=10, verify=ssl_verify, auth=auth)
             if resp.status_code == 200:
                 metrics['ambari'] = resp.json()
             else:
@@ -449,7 +465,7 @@ def _get_top_memory_processes(n=10):
         return []
 
 
-def collect_cluster_topology(ambari_url, cluster_name):
+def collect_cluster_topology(ambari_url, cluster_name, ssl_verify=True, auth=None):
     """
     Collect cluster topology from Ambari REST API.
 
@@ -462,7 +478,7 @@ def collect_cluster_topology(ambari_url, cluster_name):
 
     # Hosts
     try:
-        resp = requests.get(f"{base}/hosts", timeout=15)
+        resp = requests.get(f"{base}/hosts", timeout=15, verify=ssl_verify, auth=auth)
         if resp.status_code == 200:
             data = resp.json()
             for item in data.get('items', []):
@@ -479,7 +495,7 @@ def collect_cluster_topology(ambari_url, cluster_name):
 
     # Services
     try:
-        resp = requests.get(f"{base}/services", timeout=15)
+        resp = requests.get(f"{base}/services", timeout=15, verify=ssl_verify, auth=auth)
         if resp.status_code == 200:
             data = resp.json()
             for item in data.get('items', []):
@@ -494,7 +510,7 @@ def collect_cluster_topology(ambari_url, cluster_name):
 
     # Recent operations
     try:
-        resp = requests.get(f"{base}/requests?to=end&page_size=20", timeout=15)
+        resp = requests.get(f"{base}/requests?to=end&page_size=20", timeout=15, verify=ssl_verify, auth=auth)
         if resp.status_code == 200:
             data = resp.json()
             for item in data.get('items', []):
@@ -512,7 +528,7 @@ def collect_cluster_topology(ambari_url, cluster_name):
     try:
         resp = requests.get(
             f"{base}?fields=Clusters/desired_stack_id,Clusters/total_hosts",
-            timeout=15,
+            timeout=15, verify=ssl_verify, auth=auth,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -528,7 +544,7 @@ def collect_cluster_topology(ambari_url, cluster_name):
     return result
 
 
-def collect_service_health(ambari_url, cluster_name):
+def collect_service_health(ambari_url, cluster_name, ssl_verify=True, auth=None):
     """
     Collect service health snapshot from Ambari.
 
@@ -542,7 +558,7 @@ def collect_service_health(ambari_url, cluster_name):
     try:
         resp = requests.get(
             f"{base}/services?fields=ServiceInfo/state,ServiceInfo/maintenance_state",
-            timeout=15,
+            timeout=15, verify=ssl_verify, auth=auth,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -560,7 +576,7 @@ def collect_service_health(ambari_url, cluster_name):
     try:
         resp = requests.get(
             f"{base}/alerts?Alert/state=CRITICAL&Alert/state=WARNING",
-            timeout=15,
+            timeout=15, verify=ssl_verify, auth=auth,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -634,7 +650,7 @@ def _parse_bytes(line):
     return int(m.group(1)) if m else 0
 
 
-def collect_yarn_queues(ambari_url, cluster_name):
+def collect_yarn_queues(ambari_url, cluster_name, ssl_verify=True, auth=None):
     """
     Collect YARN queue status from the ResourceManager REST API.
 
@@ -649,7 +665,7 @@ def collect_yarn_queues(ambari_url, cluster_name):
     try:
         resp = requests.get(
             f"{ambari_url}/api/v1/clusters/{cluster_name}/services/YARN/components/RESOURCEMANAGER",
-            timeout=15,
+            timeout=15, verify=ssl_verify, auth=auth,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -701,7 +717,7 @@ def collect_yarn_queues(ambari_url, cluster_name):
     return result
 
 
-def collect_alert_history(ambari_url, cluster_name, days=3):
+def collect_alert_history(ambari_url, cluster_name, days=3, ssl_verify=True, auth=None):
     """
     Collect recent alert history from Ambari.
 
@@ -713,7 +729,7 @@ def collect_alert_history(ambari_url, cluster_name, days=3):
         resp = requests.get(
             f"{ambari_url}/api/v1/clusters/{cluster_name}"
             f"/alert_histories?page_size=100&sortBy=AlertHistory/timestamp.desc",
-            timeout=15,
+            timeout=15, verify=ssl_verify, auth=auth,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -817,7 +833,12 @@ def create_bundle(data, bundle_id, level, dest_dir):
         # L2+: include metrics, yarn_queues, hdfs_report, alert_history, jmx, granular, drift
         if level in ('L2', 'L3'):
             for key in ('yarn_queues', 'hdfs_report', 'alert_history',
-                         'jmx_metrics', 'granular_metrics', 'config_drift'):
+                         'jmx_metrics', 'granular_metrics', 'config_drift',
+                         'benchmarks', 'hbase_metrics', 'impala_metrics',
+                         'kudu_metrics', 'hive_metrics', 'zookeeper_metrics',
+                         'atlas_metrics', 'ranger_metrics', 'nifi_metrics',
+                         'kafka_metrics', 'spark_metrics', 'oozie_metrics',
+                         'solr_metrics'):
                 if key in data and data[key]:
                     filename = f'{key}.json'
                     zf.writestr(filename, json.dumps(data[key], indent=2))
@@ -931,6 +952,12 @@ def run_collection(config, level=None):
     cluster_id = config.get('cluster_id', '')
     ambari_url = config.get('ambari_server_url', 'http://localhost:8080')
     cluster_name = config.get('cluster_name', 'cluster')
+    ssl_verify = config.get('ambari_ssl_verify', True)
+    ambari_auth = None
+    ambari_user = config.get('ambari_username', '')
+    ambari_pass = config.get('ambari_password', '')
+    if ambari_user and ambari_pass:
+        ambari_auth = (ambari_user, ambari_pass)
 
     try:
         data = {'cluster_id': cluster_id}
@@ -938,15 +965,15 @@ def run_collection(config, level=None):
         # L1: configs + system_info + topology + service_health + log_tails
         data['configs'] = collect_configs(config.get('config_paths', []))
         data['system_info'] = collect_system_info(cluster_id=cluster_id)
-        data['topology'] = collect_cluster_topology(ambari_url, cluster_name)
-        data['service_health'] = collect_service_health(ambari_url, cluster_name)
+        data['topology'] = collect_cluster_topology(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+        data['service_health'] = collect_service_health(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
         data['log_tails'] = collect_log_tails(
             config.get('log_paths', []), tail_lines=200,
         )
 
         # L1+: kerberos, ssl_certs, kernel_params
         data['kerberos_status'] = collect_kerberos_status()
-        data['ssl_certs'] = collect_ssl_certs(ambari_url, cluster_name)
+        data['ssl_certs'] = collect_ssl_certs(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
         data['kernel_params'] = collect_kernel_params()
 
         # L2+: metrics + yarn_queues + hdfs_report + alert_history + jmx + granular + drift
@@ -954,13 +981,36 @@ def run_collection(config, level=None):
             data['metrics'] = collect_metrics(
                 ambari_server_url=ambari_url,
                 cluster_name=cluster_name,
+                ssl_verify=ssl_verify,
+                auth=ambari_auth,
             )
-            data['yarn_queues'] = collect_yarn_queues(ambari_url, cluster_name)
+            data['yarn_queues'] = collect_yarn_queues(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
             data['hdfs_report'] = collect_hdfs_report()
-            data['alert_history'] = collect_alert_history(ambari_url, cluster_name)
-            data['jmx_metrics'] = collect_jmx_metrics(ambari_url, cluster_name)
+            data['alert_history'] = collect_alert_history(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['jmx_metrics'] = collect_jmx_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
             data['granular_metrics'] = collect_granular_metrics()
-            data['config_drift'] = collect_config_drift(ambari_url, cluster_name)
+            data['config_drift'] = collect_config_drift(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+
+            # Service-specific metrics
+            data['hbase_metrics'] = collect_hbase_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['impala_metrics'] = collect_impala_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['kudu_metrics'] = collect_kudu_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['hive_metrics'] = collect_hive_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['zookeeper_metrics'] = collect_zookeeper_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['atlas_metrics'] = collect_atlas_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['ranger_metrics'] = collect_ranger_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['nifi_metrics'] = collect_nifi_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['kafka_metrics'] = collect_kafka_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['spark_metrics'] = collect_spark_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['oozie_metrics'] = collect_oozie_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['solr_metrics'] = collect_solr_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+
+            # Hardware benchmarks (CPU, memory, disk, network)
+            if config.get('benchmarks_enabled', True):
+                data['benchmarks'] = run_all_benchmarks(
+                    duration_seconds=config.get('benchmark_duration', 10),
+                    test_size_mb=config.get('benchmark_memory_mb', 256),
+                )
 
         # L3: full logs + thread_dumps + gc_logs
         if level == 'L3':

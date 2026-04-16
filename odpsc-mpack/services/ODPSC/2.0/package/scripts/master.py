@@ -246,6 +246,10 @@ class OdpscMaster(Script):
             'cluster_id': cluster_id,
             'audit_enabled': odpsc_site.get('audit_enabled', 'false').lower() == 'true',
             'attachment_otp': odpsc_site.get('attachment_otp', ''),
+            'supportplane_enabled': odpsc_site.get('supportplane_enabled', 'false').lower() == 'true',
+            'supportplane_endpoint': odpsc_site.get('supportplane_endpoint', ''),
+            'supportplane_token': odpsc_site.get('supportplane_token', ''),
+            'ambari_ssl_verify': odpsc_site.get('ambari_ssl_verify', 'true').lower() == 'true',
         }
 
         config_path = os.path.join(CONFIG_DIR, 'master_config.json')
