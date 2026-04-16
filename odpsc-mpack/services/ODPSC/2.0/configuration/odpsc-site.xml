@@ -4,7 +4,7 @@
   <property>
     <name>collection_enabled</name>
     <value>true</value>
-    <description>Active ou désactive la collecte de diagnostics. Si false, aucune collecte n'est effectuée.</description>
+    <description>Enable or disable diagnostics collection. When false, no collection is performed.</description>
     <display-name>Collection Enabled</display-name>
     <value-attributes>
       <type>boolean</type>
@@ -14,7 +14,7 @@
   <property>
     <name>auto_send_enabled</name>
     <value>true</value>
-    <description>Active ou désactive l'envoi automatique des bundles au support. Si false, les bundles sont générés mais pas envoyés.</description>
+    <description>Enable or disable automatic bundle sending to support. When false, bundles are generated but not sent.</description>
     <display-name>Auto Send Enabled</display-name>
     <value-attributes>
       <type>boolean</type>
@@ -24,7 +24,7 @@
   <property>
     <name>send_frequency</name>
     <value>weekly</value>
-    <description>Fréquence d'envoi des diagnostics. Valeurs possibles : daily, weekly, monthly.</description>
+    <description>Diagnostics send frequency. Possible values: daily, weekly, monthly.</description>
     <display-name>Send Frequency</display-name>
     <value-attributes>
       <type>string</type>
@@ -34,7 +34,7 @@
   <property>
     <name>support_endpoint</name>
     <value>https://support.odp.com/upload</value>
-    <description>URL de l'endpoint de support pour l'envoi des bundles diagnostiques.</description>
+    <description>Support endpoint URL for sending diagnostic bundles.</description>
     <display-name>Support Endpoint URL</display-name>
     <value-attributes>
       <type>string</type>
@@ -44,7 +44,7 @@
   <property>
     <name>support_token</name>
     <value></value>
-    <description>Token d'authentification pour l'envoi au support. Obligatoire si auto_send_enabled est true.</description>
+    <description>Authentication token for the support endpoint. Required when auto_send_enabled is true.</description>
     <display-name>Support API Token</display-name>
     <property-type>PASSWORD</property-type>
     <value-attributes>
@@ -55,7 +55,7 @@
   <property>
     <name>hdfs_path</name>
     <value>/odpsc/diagnostics</value>
-    <description>Chemin HDFS pour l'archivage optionnel des bundles.</description>
+    <description>HDFS path for optional bundle archiving.</description>
     <display-name>HDFS Archive Path</display-name>
     <value-attributes>
       <type>string</type>
@@ -65,7 +65,7 @@
   <property>
     <name>hdfs_archive_enabled</name>
     <value>false</value>
-    <description>Active l'archivage optionnel des bundles vers HDFS. Le stockage local reste le stockage primaire.</description>
+    <description>Enable optional bundle archiving to HDFS. Local storage remains the primary storage.</description>
     <display-name>HDFS Archive Enabled</display-name>
     <value-attributes>
       <type>boolean</type>
@@ -75,7 +75,7 @@
   <property>
     <name>log_paths</name>
     <value>["/var/log/hadoop/*", "/var/log/hive/*", "/var/log/spark/*", "/var/log/yarn/*"]</value>
-    <description>Liste JSON des chemins de logs à collecter (supporte les globs).</description>
+    <description>JSON list of log paths to collect (supports globs).</description>
     <display-name>Log Paths</display-name>
     <value-attributes>
       <type>string</type>
@@ -85,7 +85,7 @@
   <property>
     <name>master_port</name>
     <value>8085</value>
-    <description>Port d'écoute du serveur ODPSC Master.</description>
+    <description>Listening port for the ODPSC Master server.</description>
     <display-name>Master Port</display-name>
     <value-attributes>
       <type>int</type>
@@ -97,7 +97,7 @@
   <property>
     <name>admin_username</name>
     <value>admin</value>
-    <description>Nom d'utilisateur pour l'authentification Basic Auth de l'API de gestion.</description>
+    <description>Username for Basic Auth on the management API.</description>
     <display-name>Admin Username</display-name>
     <value-attributes>
       <type>string</type>
@@ -107,19 +107,8 @@
   <property>
     <name>admin_password</name>
     <value></value>
-    <description>Mot de passe pour l'authentification Basic Auth de l'API de gestion. Haché avec bcrypt.</description>
+    <description>Password for Basic Auth on the management API. Hashed with bcrypt at install time.</description>
     <display-name>Admin Password</display-name>
-    <property-type>PASSWORD</property-type>
-    <value-attributes>
-      <type>password</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>encryption_key</name>
-    <value></value>
-    <description>Clé pour le chiffrement AES-256-GCM des bundles. Si vide, une clé est générée automatiquement.</description>
-    <display-name>Encryption Key</display-name>
     <property-type>PASSWORD</property-type>
     <value-attributes>
       <type>password</type>
@@ -129,7 +118,7 @@
   <property>
     <name>log_retention_days</name>
     <value>7</value>
-    <description>Nombre de jours de logs à collecter.</description>
+    <description>Number of days of logs to collect.</description>
     <display-name>Log Retention Days</display-name>
     <value-attributes>
       <type>int</type>
@@ -141,7 +130,7 @@
   <property>
     <name>max_log_size_mb</name>
     <value>1</value>
-    <description>Taille maximale en MB de logs à collecter par fichier.</description>
+    <description>Maximum log size in MB to collect per file.</description>
     <display-name>Max Log Size (MB)</display-name>
     <value-attributes>
       <type>int</type>
@@ -153,7 +142,7 @@
   <property>
     <name>ambari_server_url</name>
     <value>http://localhost:8080</value>
-    <description>URL du serveur Ambari pour la collecte de métriques et le déclenchement des commandes.</description>
+    <description>Ambari Server URL for metrics collection and command triggering.</description>
     <display-name>Ambari Server URL</display-name>
     <value-attributes>
       <type>string</type>
@@ -163,7 +152,7 @@
   <property>
     <name>cluster_name</name>
     <value>cluster</value>
-    <description>Nom du cluster Ambari.</description>
+    <description>Ambari cluster name.</description>
     <display-name>Cluster Name</display-name>
     <value-attributes>
       <type>string</type>
@@ -173,7 +162,7 @@
   <property>
     <name>api_key</name>
     <value></value>
-    <description>Clé API partagée entre agents et master pour l'authentification des uploads de bundles. Générée automatiquement lors de l'installation.</description>
+    <description>Shared API key between agents and master for bundle upload authentication. Auto-generated at install time.</description>
     <display-name>API Key</display-name>
     <property-type>PASSWORD</property-type>
     <value-attributes>
@@ -184,38 +173,8 @@
   <property>
     <name>bundle_level</name>
     <value>L1</value>
-    <description>Niveau de collecte par défaut. L1: configs+sysinfo, L2: +métriques, L3: +logs.</description>
+    <description>Default collection level. L1: configs+sysinfo, L2: +metrics, L3: +logs.</description>
     <display-name>Bundle Level</display-name>
-    <value-attributes>
-      <type>string</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>tls_enabled</name>
-    <value>false</value>
-    <description>Active le TLS pour le serveur gunicorn du master.</description>
-    <display-name>TLS Enabled</display-name>
-    <value-attributes>
-      <type>boolean</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>tls_cert_path</name>
-    <value></value>
-    <description>Chemin vers le certificat TLS (PEM) pour le serveur master.</description>
-    <display-name>TLS Certificate Path</display-name>
-    <value-attributes>
-      <type>string</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>tls_key_path</name>
-    <value></value>
-    <description>Chemin vers la clé privée TLS pour le serveur master.</description>
-    <display-name>TLS Key Path</display-name>
     <value-attributes>
       <type>string</type>
     </value-attributes>
@@ -224,7 +183,7 @@
   <property>
     <name>max_upload_size_mb</name>
     <value>100</value>
-    <description>Taille maximale en MB pour un upload de bundle agent.</description>
+    <description>Maximum upload size in MB for an agent bundle.</description>
     <display-name>Max Upload Size (MB)</display-name>
     <value-attributes>
       <type>int</type>
@@ -236,7 +195,7 @@
   <property>
     <name>max_bundle_size_mb</name>
     <value>500</value>
-    <description>Taille maximale en MB pour un bundle master agrégé.</description>
+    <description>Maximum size in MB for an aggregated master bundle.</description>
     <display-name>Max Bundle Size (MB)</display-name>
     <value-attributes>
       <type>int</type>
@@ -248,7 +207,7 @@
   <property>
     <name>gunicorn_workers</name>
     <value>2</value>
-    <description>Nombre de workers gunicorn pour le serveur master.</description>
+    <description>Number of gunicorn workers for the master server.</description>
     <display-name>Gunicorn Workers</display-name>
     <value-attributes>
       <type>int</type>
@@ -258,19 +217,9 @@
   </property>
 
   <property>
-    <name>cluster_id</name>
-    <value></value>
-    <description>Identifiant unique du cluster. Généré automatiquement lors de l'installation du master.</description>
-    <display-name>Cluster ID</display-name>
-    <value-attributes>
-      <type>string</type>
-    </value-attributes>
-  </property>
-
-  <property>
     <name>audit_enabled</name>
     <value>false</value>
-    <description>Active l'audit des opérations (bundles reçus, agrégés, envoyés). Désactivé par défaut.</description>
+    <description>Enable audit trail for operations (bundles received, aggregated, sent). Disabled by default.</description>
     <display-name>Audit Enabled</display-name>
     <value-attributes>
       <type>boolean</type>
@@ -278,43 +227,22 @@
   </property>
 
   <property>
+    <name>cluster_id</name>
+    <value></value>
+    <description>Unique cluster identifier. Auto-generated at install time. Do not modify.</description>
+    <display-name>Cluster ID</display-name>
+    <value-attributes>
+      <type>string</type>
+    </value-attributes>
+  </property>
+
+  <property>
     <name>attachment_otp</name>
     <value></value>
-    <description>OTP pour l'attachement du cluster au SupportPlane. Généré par le SupportPlane lors de la demande d'attachement.</description>
+    <description>One-time password for attaching the cluster to SupportPlane. Generated by SupportPlane during attachment request.</description>
     <display-name>Attachment OTP</display-name>
     <value-attributes>
       <type>string</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>supportplane_enabled</name>
-    <value>false</value>
-    <description>Active l'envoi des bundles au SupportPlane.</description>
-    <display-name>SupportPlane Enabled</display-name>
-    <value-attributes>
-      <type>boolean</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>supportplane_endpoint</name>
-    <value></value>
-    <description>URL de l'endpoint SupportPlane pour l'envoi des bundles.</description>
-    <display-name>SupportPlane Endpoint URL</display-name>
-    <value-attributes>
-      <type>string</type>
-    </value-attributes>
-  </property>
-
-  <property>
-    <name>supportplane_token</name>
-    <value></value>
-    <description>Token d'authentification pour l'envoi au SupportPlane.</description>
-    <display-name>SupportPlane Token</display-name>
-    <property-type>PASSWORD</property-type>
-    <value-attributes>
-      <type>password</type>
     </value-attributes>
   </property>
 </configuration>

@@ -13,7 +13,7 @@
           <displayName>ODPSC Master</displayName>
           <category>MASTER</category>
           <cardinality>1</cardinality>
-          <versionAdvertised>true</versionAdvertised>
+          <versionAdvertised>false</versionAdvertised>
           <commandScript>
             <script>scripts/master.py</script>
             <scriptType>PYTHON</scriptType>
@@ -35,7 +35,7 @@
           <displayName>ODPSC Agent</displayName>
           <category>SLAVE</category>
           <cardinality>ALL</cardinality>
-          <versionAdvertised>true</versionAdvertised>
+          <versionAdvertised>false</versionAdvertised>
           <commandScript>
             <script>scripts/agent.py</script>
             <scriptType>PYTHON</scriptType>

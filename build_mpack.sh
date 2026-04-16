@@ -19,18 +19,18 @@ echo "=== Building ODPSC Management Pack v${MPACK_VERSION} ==="
 # Validate mpack structure
 echo "Validating mpack structure..."
 required_files=(
-    "${MPACK_DIR}/metainfo.xml"
-    "${MPACK_DIR}/services/ODPSC/metainfo.xml"
-    "${MPACK_DIR}/services/ODPSC/configuration/odpsc-site.xml"
-    "${MPACK_DIR}/services/ODPSC/scripts/master.py"
-    "${MPACK_DIR}/services/ODPSC/scripts/agent.py"
-    "${MPACK_DIR}/services/ODPSC/resources/odpsc_master.py"
-    "${MPACK_DIR}/services/ODPSC/resources/odpsc_agent.py"
-    "${MPACK_DIR}/services/ODPSC/resources/analyzer.py"
-    "${MPACK_DIR}/services/ODPSC/resources/audit.py"
-    "${MPACK_DIR}/services/ODPSC/resources/collectors.py"
-    "${MPACK_DIR}/services/ODPSC/resources/wsgi.py"
-    "${MPACK_DIR}/services/ODPSC/resources/requirements.txt"
+    "${MPACK_DIR}/mpack.json"
+    "${MPACK_DIR}/services/ODPSC/2.0/metainfo.xml"
+    "${MPACK_DIR}/services/ODPSC/2.0/configuration/odpsc-site.xml"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/scripts/master.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/scripts/agent.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/odpsc_master.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/odpsc_agent.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/analyzer.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/audit.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/collectors.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/wsgi.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/requirements.txt"
 )
 
 for f in "${required_files[@]}"; do
@@ -44,14 +44,14 @@ echo "All required files present."
 # Verify Python syntax
 echo "Checking Python syntax..."
 python_files=(
-    "${MPACK_DIR}/services/ODPSC/scripts/master.py"
-    "${MPACK_DIR}/services/ODPSC/scripts/agent.py"
-    "${MPACK_DIR}/services/ODPSC/resources/odpsc_master.py"
-    "${MPACK_DIR}/services/ODPSC/resources/odpsc_agent.py"
-    "${MPACK_DIR}/services/ODPSC/resources/analyzer.py"
-    "${MPACK_DIR}/services/ODPSC/resources/audit.py"
-    "${MPACK_DIR}/services/ODPSC/resources/collectors.py"
-    "${MPACK_DIR}/services/ODPSC/resources/wsgi.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/scripts/master.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/scripts/agent.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/odpsc_master.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/odpsc_agent.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/analyzer.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/audit.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/collectors.py"
+    "${MPACK_DIR}/services/ODPSC/2.0/package/files/wsgi.py"
 )
 
 for f in "${python_files[@]}"; do

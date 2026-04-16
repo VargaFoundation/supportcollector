@@ -1,7 +1,0 @@
-<?xml version="1.0"?>
-<management-pack>
-  <name>ODPSC</name>
-  <version>2.0</version>
-  <description>ODP Support Collector - Collecte automatique de logs, métriques et configurations pour le support ODP</description>
-  <mpack-dependencies/>
-</management-pack>

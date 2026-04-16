@@ -10,6 +10,7 @@ import sys
 # Ambari resource_management imports
 try:
     from resource_management.core.resources.system import Execute, File, Directory
+    from resource_management.core.resources.accounts import Group, User
     from resource_management.libraries.script.script import Script
     from resource_management.core.logger import Logger
 except ImportError:
@@ -55,11 +56,9 @@ class OdpscAgent(Script):
     def install(self, env):
         Logger.info("Installing ODPSC Agent v2")
 
-        # Create service user
-        try:
-            Execute(f'id -u {ODPSC_USER} || useradd -r -s /sbin/nologin {ODPSC_USER}')
-        except Exception:
-            Logger.info("Service user creation skipped (may already exist)")
+        # Create service user and group (must exist before Directory calls with owner)
+        Group(ODPSC_USER, action="create")
+        User(ODPSC_USER, action="create", shell="/sbin/nologin", system=True, gid=ODPSC_USER)
 
         # Create directories
         Directory(RESOURCES_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
@@ -71,17 +70,18 @@ class OdpscAgent(Script):
         Directory(FAILED_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
 
         # Install Python dependencies
-        Execute('pip3 install requests psutil')
+        Execute(('pip3', 'install', 'requests', 'psutil'), sudo=True)
 
-        # Copy resources
+        # Copy resources from mpack package/files
         service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        resources_src = os.path.join(service_dir, 'resources')
+        resources_src = os.path.join(service_dir, 'files')
 
         for filename in ('odpsc_agent.py', 'requirements.txt'):
             src = os.path.join(resources_src, filename)
             dst = os.path.join(RESOURCES_DIR, filename)
             if os.path.exists(src):
-                Execute(f'cp {src} {dst}')
+                Execute(('cp', src, dst), sudo=True)
+                Execute(('chown', f'{ODPSC_USER}:{ODPSC_USER}', dst), sudo=True)
 
         Logger.info("ODPSC Agent v2 installed successfully")
 
@@ -102,13 +102,11 @@ class OdpscAgent(Script):
             pass
 
         master_port = odpsc_site.get('master_port', '8085')
-        tls_enabled = odpsc_site.get('tls_enabled', 'false').lower() == 'true'
-        scheme = 'https' if tls_enabled else 'http'
 
         import json
         agent_config = {
             'collection_enabled': odpsc_site.get('collection_enabled', 'true').lower() == 'true',
-            'master_url': f'{scheme}://{master_host}:{master_port}',
+            'master_url': f'http://{master_host}:{master_port}',
             'api_key': odpsc_site.get('api_key', ''),
             'bundle_level': odpsc_site.get('bundle_level', 'L1'),
             'log_paths': json.loads(odpsc_site.get('log_paths', '[]')),
@@ -117,7 +115,6 @@ class OdpscAgent(Script):
             'log_retention_days': int(odpsc_site.get('log_retention_days', 7)),
             'ambari_server_url': odpsc_site.get('ambari_server_url', 'http://localhost:8080'),
             'cluster_name': odpsc_site.get('cluster_name', 'cluster'),
-            'cluster_id': odpsc_site.get('cluster_id', ''),
         }
 
         config_path = os.path.join(CONFIG_DIR, 'agent_config.json')
@@ -144,20 +141,20 @@ class OdpscAgent(Script):
         Logger.info("Starting ODPSC Agent v2")
         self.configure(env)
 
-        # Run an initial collection
+        # Run an initial collection (best-effort, don't fail startup if master is not ready)
         Execute(
-            f'python3 {AGENT_SCRIPT} --collect >> {LOG_DIR}/agent.log 2>&1',
+            f'python3 {AGENT_SCRIPT} --collect >> {LOG_DIR}/agent.log 2>&1 || true',
             user=ODPSC_USER,
         )
 
-        Logger.info("ODPSC Agent v2 started (initial collection triggered)")
+        Logger.info("ODPSC Agent v2 started (cron job installed)")
 
     def stop(self, env):
         Logger.info("Stopping ODPSC Agent v2")
 
         # Remove cron job
         if os.path.exists(CRON_FILE):
-            os.remove(CRON_FILE)
+            Execute(('rm', '-f', CRON_FILE), sudo=True)
             Logger.info("Removed cron job")
 
     def status(self, env):

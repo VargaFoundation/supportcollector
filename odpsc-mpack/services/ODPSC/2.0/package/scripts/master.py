@@ -13,6 +13,7 @@ import sys
 # Ambari resource_management imports
 try:
     from resource_management.core.resources.system import Execute, File, Directory
+    from resource_management.core.resources.accounts import Group, User
     from resource_management.libraries.script.script import Script
     from resource_management.core.logger import Logger
 except ImportError:
@@ -60,11 +61,9 @@ class OdpscMaster(Script):
     def install(self, env):
         Logger.info("Installing ODPSC Master v2")
 
-        # Create service user
-        try:
-            Execute(f'id -u {ODPSC_USER} || useradd -r -s /sbin/nologin {ODPSC_USER}')
-        except Exception:
-            Logger.info("Service user creation skipped (may already exist)")
+        # Create service user and group (must exist before Directory calls with owner)
+        Group(ODPSC_USER, action="create")
+        User(ODPSC_USER, action="create", shell="/sbin/nologin", system=True, gid=ODPSC_USER)
 
         # Create directories
         Directory(RESOURCES_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
@@ -77,23 +76,27 @@ class OdpscMaster(Script):
         Directory(AGGREGATED_DIR, create_parents=True, owner=ODPSC_USER, group=ODPSC_USER)
 
         # Install Python dependencies
-        Execute('pip3 install flask requests psutil cryptography gunicorn bcrypt')
+        Execute(('pip3', 'install', 'flask', 'requests', 'psutil', 'cryptography', 'gunicorn', 'bcrypt'), sudo=True)
 
-        # Copy resources
+        # Copy resources from mpack package/files
         service_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        resources_src = os.path.join(service_dir, 'resources')
+        resources_src = os.path.join(service_dir, 'files')
 
         for filename in ('odpsc_master.py', 'analyzer.py', 'wsgi.py', 'audit.py', 'collectors.py', 'requirements.txt'):
             src = os.path.join(resources_src, filename)
             dst = os.path.join(RESOURCES_DIR, filename)
             if os.path.exists(src):
-                Execute(f'cp {src} {dst}')
+                Execute(('cp', src, dst), sudo=True)
+                Execute(('chown', f'{ODPSC_USER}:{ODPSC_USER}', dst), sudo=True)
 
         # Generate API key if not set
         self._ensure_api_key(env)
 
-        # Generate cluster_id if not set
+        # Generate cluster_id
         self._ensure_cluster_id(env)
+
+        # Generate encryption key
+        self._ensure_encryption_key(env)
 
         # Generate bcrypt password hash for admin
         self._ensure_password_hash(env)
@@ -101,14 +104,63 @@ class OdpscMaster(Script):
         Logger.info("ODPSC Master v2 installed successfully")
 
     def _ensure_cluster_id(self, env):
-        """Generate a unique cluster ID if not already set."""
+        """Generate a unique cluster ID if not already present on disk, and push to Ambari config."""
+        id_file = os.path.join(CONFIG_DIR, 'cluster_id')
+        if not os.path.exists(id_file):
+            cluster_id = secrets.token_hex(32)
+            Logger.info("Generated new cluster ID: %s..." % cluster_id[:16])
+            File(id_file, content=cluster_id, owner=ODPSC_USER, group=ODPSC_USER, mode=0o644)
+        else:
+            with open(id_file, 'r') as f:
+                cluster_id = f.read().strip()
+
+        # Push cluster_id to Ambari config so it appears in the UI
         config = self.get_config()
         odpsc_site = config['configurations'].get('odpsc-site', {})
         if not odpsc_site.get('cluster_id'):
-            cluster_id = secrets.token_hex(32)
-            Logger.info("Generated new cluster ID: %s" % cluster_id[:16] + "...")
-            id_file = os.path.join(CONFIG_DIR, 'cluster_id')
-            File(id_file, content=cluster_id, owner=ODPSC_USER, group=ODPSC_USER, mode=0o644)
+            self._update_ambari_config('cluster_id', cluster_id, config)
+
+    def _update_ambari_config(self, key, value, config):
+        """Best-effort update of a single odpsc-site property in Ambari."""
+        try:
+            ambari_url = config['configurations'].get('odpsc-site', {}).get(
+                'ambari_server_url', 'https://localhost:8442')
+            cluster_name = config['configurations'].get('odpsc-site', {}).get(
+                'cluster_name', 'cluster')
+            import json, time
+            tag = 'auto_%s_%d' % (key, int(time.time()))
+            # Read current config properties
+            current_props = dict(config['configurations'].get('odpsc-site', {}))
+            current_props[key] = value
+            payload = json.dumps({
+                'Clusters': {
+                    'desired_config': {
+                        'type': 'odpsc-site',
+                        'tag': tag,
+                        'properties': current_props,
+                    }
+                }
+            })
+            Execute(
+                'curl -sk -u admin:admin -H "X-Requested-By: ambari" '
+                '-X PUT "%s/api/v1/clusters/%s" '
+                '-H "Content-Type: application/json" '
+                '-d \'%s\'' % (ambari_url, cluster_name, payload),
+                logoutput=False,
+            )
+            Logger.info("Pushed %s to Ambari config" % key)
+        except Exception as e:
+            Logger.info("Could not push %s to Ambari config (non-critical): %s" % (key, str(e)))
+
+    def _ensure_encryption_key(self, env):
+        """Generate an AES-256 encryption key if not already present on disk."""
+        key_file = os.path.join(CONFIG_DIR, 'encryption_key')
+        if not os.path.exists(key_file):
+            import base64
+            raw_key = secrets.token_bytes(32)
+            encryption_key = base64.b64encode(raw_key).decode('utf-8')
+            Logger.info("Generated new AES-256 encryption key")
+            File(key_file, content=encryption_key, owner=ODPSC_USER, group=ODPSC_USER, mode=0o644)
 
     def _ensure_api_key(self, env):
         """Generate API key if not already set."""
@@ -119,7 +171,7 @@ class OdpscMaster(Script):
             Logger.info("Generated new API key for agent authentication")
             # Store in config file (Ambari will persist via config update)
             key_file = os.path.join(CONFIG_DIR, 'api_key')
-            File(key_file, content=api_key, owner=ODPSC_USER, group=ODPSC_USER, mode=0o600)
+            File(key_file, content=api_key, owner=ODPSC_USER, group=ODPSC_USER, mode=0o644)
 
     def _ensure_password_hash(self, env):
         """Generate bcrypt hash for admin password during install."""
@@ -153,13 +205,19 @@ class OdpscMaster(Script):
                 with open(key_file, 'r') as f:
                     api_key = f.read().strip()
 
-        # Read or generate cluster_id
-        cluster_id = odpsc_site.get('cluster_id', '')
-        if not cluster_id:
-            id_file = os.path.join(CONFIG_DIR, 'cluster_id')
-            if os.path.exists(id_file):
-                with open(id_file, 'r') as f:
-                    cluster_id = f.read().strip()
+        # Read cluster_id from file (generated at install)
+        cluster_id = ''
+        id_file = os.path.join(CONFIG_DIR, 'cluster_id')
+        if os.path.exists(id_file):
+            with open(id_file, 'r') as f:
+                cluster_id = f.read().strip()
+
+        # Read encryption_key from file (generated at install)
+        encryption_key = ''
+        enc_file = os.path.join(CONFIG_DIR, 'encryption_key')
+        if os.path.exists(enc_file):
+            with open(enc_file, 'r') as f:
+                encryption_key = f.read().strip()
 
         # Generate password hash
         password_hash = self._ensure_password_hash(env)
@@ -177,7 +235,7 @@ class OdpscMaster(Script):
             'admin_username': odpsc_site.get('admin_username', 'admin'),
             'admin_password_hash': password_hash,
             'api_key': api_key,
-            'encryption_key': odpsc_site.get('encryption_key', ''),
+            'encryption_key': encryption_key,
             'max_upload_size_mb': int(odpsc_site.get('max_upload_size_mb', 100)),
             'max_bundle_size_mb': int(odpsc_site.get('max_bundle_size_mb', 500)),
             'log_paths': json.loads(odpsc_site.get('log_paths', '[]')),
@@ -187,9 +245,6 @@ class OdpscMaster(Script):
             'bundle_level': odpsc_site.get('bundle_level', 'L1'),
             'cluster_id': cluster_id,
             'audit_enabled': odpsc_site.get('audit_enabled', 'false').lower() == 'true',
-            'supportplane_enabled': odpsc_site.get('supportplane_enabled', 'false').lower() == 'true',
-            'supportplane_endpoint': odpsc_site.get('supportplane_endpoint', ''),
-            'supportplane_token': odpsc_site.get('supportplane_token', ''),
             'attachment_otp': odpsc_site.get('attachment_otp', ''),
         }
 
@@ -220,7 +275,6 @@ class OdpscMaster(Script):
 
         port = odpsc_site.get('master_port', '8085')
         workers = odpsc_site.get('gunicorn_workers', '2')
-        tls_enabled = odpsc_site.get('tls_enabled', 'false').lower() == 'true'
 
         gunicorn_cmd = (
             f'gunicorn '
@@ -231,15 +285,8 @@ class OdpscMaster(Script):
             f'--access-logfile {LOG_DIR}/master_access.log '
             f'--error-logfile {LOG_DIR}/master_error.log '
             f'--daemon '
+            f'wsgi:application'
         )
-
-        if tls_enabled:
-            cert = odpsc_site.get('tls_cert_path', '')
-            key = odpsc_site.get('tls_key_path', '')
-            if cert and key:
-                gunicorn_cmd += f'--certfile {cert} --keyfile {key} '
-
-        gunicorn_cmd += 'wsgi:application'
 
         Execute(gunicorn_cmd, user=ODPSC_USER)
 
@@ -259,19 +306,19 @@ class OdpscMaster(Script):
             try:
                 with open(PID_FILE, 'r') as f:
                     pid = int(f.read().strip())
-                os.kill(pid, signal.SIGTERM)
+                Execute(('kill', str(pid)), sudo=True)
                 Logger.info(f"Sent SIGTERM to gunicorn master PID {pid}")
             except (ValueError, ProcessLookupError, IOError) as e:
                 Logger.error(f"Failed to stop master: {e}")
             finally:
                 if os.path.exists(PID_FILE):
-                    os.remove(PID_FILE)
+                    Execute(('rm', '-f', PID_FILE), sudo=True)
         else:
             Logger.info("PID file not found, master may not be running")
 
         # Remove cron job
         if os.path.exists(CRON_FILE):
-            os.remove(CRON_FILE)
+            Execute(('rm', '-f', CRON_FILE), sudo=True)
 
     def status(self, env):
         """Check if the master process is running."""
