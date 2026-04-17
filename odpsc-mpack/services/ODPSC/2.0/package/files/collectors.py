@@ -701,6 +701,279 @@ def collect_kudu_metrics(ambari_url, cluster_name, ssl_verify=True, auth=None):
     return result
 
 
+def collect_knox_metrics(ambari_url, cluster_name, ssl_verify=True, auth=None):
+    """
+    Collect Apache Knox Gateway metrics and configuration.
+
+    Returns:
+        dict with gateway info, topologies, SSL status, session config.
+    """
+    result = {
+        'timestamp': datetime.now(tz=None).isoformat(),
+        'hostname': socket.getfqdn(),
+        'gateway': {},
+        'topologies': [],
+        'config': {},
+        'service_info': {},
+    }
+
+    hosts = _discover_service_hosts(ambari_url, cluster_name, 'KNOX',
+                                     ['KNOX_GATEWAY'],
+                                     ssl_verify=ssl_verify, auth=auth)
+
+    for host in hosts.get('KNOX_GATEWAY', []):
+        # Knox admin API (port 8443)
+        try:
+            resp = requests.get(f"https://{host}:8443/gateway/admin/api/v1/topologies",
+                                timeout=10, verify=False)
+            if resp.status_code == 200:
+                data = resp.json()
+                topo_list = data.get('topologies', {}).get('topology', [])
+                if isinstance(topo_list, dict):
+                    topo_list = [topo_list]
+                result['gateway'] = {'host': host, 'status': 'ACTIVE'}
+                for topo in topo_list:
+                    result['topologies'].append({
+                        'name': topo.get('name', ''),
+                        'timestamp': topo.get('timestamp', ''),
+                        'uri': topo.get('uri', ''),
+                    })
+            elif resp.status_code == 401:
+                result['gateway'] = {'host': host, 'status': 'ACTIVE_AUTH_REQUIRED'}
+        except requests.RequestException:
+            result['gateway'] = {'host': host, 'status': 'UNREACHABLE'}
+        break
+
+    # Knox config from Ambari
+    knox_cfg = _get_ambari_config(ambari_url, cluster_name, 'gateway-site',
+                                   ssl_verify=ssl_verify, auth=auth)
+    if knox_cfg:
+        result['config'] = {
+            'gateway_port': knox_cfg.get('gateway.port', '8443'),
+            'gateway_path': knox_cfg.get('gateway.path', 'gateway'),
+            'ssl_enabled': knox_cfg.get('ssl.enabled', 'true'),
+            'session_timeout': knox_cfg.get('gateway.session.timeout.minutes', ''),
+            'websocket_enabled': knox_cfg.get('gateway.websocket.feature.enabled', 'false'),
+        }
+
+    result['service_info'] = {
+        'knox_count': len(hosts.get('KNOX_GATEWAY', [])),
+    }
+    return result
+
+
+def collect_livy_metrics(ambari_url, cluster_name, ssl_verify=True, auth=None):
+    """
+    Collect Livy server session and batch metrics.
+
+    Returns:
+        dict with sessions, batches, configuration.
+    """
+    result = {
+        'timestamp': datetime.now(tz=None).isoformat(),
+        'hostname': socket.getfqdn(),
+        'sessions': {},
+        'batches': {},
+        'service_info': {},
+    }
+
+    # Try LIVY2_SERVER then LIVY_SERVER
+    for service, component in [('SPARK2', 'LIVY2_SERVER'), ('SPARK', 'LIVY_SERVER')]:
+        hosts = _discover_service_hosts(ambari_url, cluster_name, service,
+                                         [component], ssl_verify=ssl_verify, auth=auth)
+        if hosts.get(component):
+            break
+
+    livy_hosts = hosts.get(component, [])
+
+    for host in livy_hosts:
+        # Livy sessions (port 8999)
+        try:
+            resp = requests.get(f"http://{host}:8999/sessions", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                sessions = data.get('sessions', [])
+                active = sum(1 for s in sessions if s.get('state') in ('idle', 'busy', 'starting'))
+                dead = sum(1 for s in sessions if s.get('state') in ('dead', 'error', 'shutting_down'))
+                result['sessions'] = {
+                    'total': len(sessions),
+                    'active': active,
+                    'dead': dead,
+                    'orphaned': sum(1 for s in sessions
+                                    if s.get('state') == 'idle'
+                                    and s.get('appId') is None),
+                }
+        except requests.RequestException:
+            pass
+
+        # Livy batches
+        try:
+            resp = requests.get(f"http://{host}:8999/batches", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                batches = data.get('sessions', [])
+                result['batches'] = {
+                    'total': len(batches),
+                    'running': sum(1 for b in batches if b.get('state') == 'running'),
+                }
+        except requests.RequestException:
+            pass
+        break
+
+    result['service_info'] = {
+        'livy_count': len(livy_hosts),
+    }
+    return result
+
+
+def collect_infra_diagnostics():
+    """
+    Collect infrastructure-level diagnostics: SMART disk health, dmesg errors,
+    RAID status, CPU power management, NUMA topology.
+
+    Returns:
+        dict with disk_health, dmesg_errors, cpu_power, numa info.
+    """
+    result = {
+        'timestamp': datetime.now(tz=None).isoformat(),
+        'hostname': socket.getfqdn(),
+        'disk_smart': [],
+        'dmesg_errors': [],
+        'cpu_power': {},
+        'numa': {},
+        'virtualization': {},
+    }
+
+    # SMART disk health
+    try:
+        proc = subprocess.run(
+            ['bash', '-c', 'lsblk -d -n -o NAME,TYPE 2>/dev/null | grep disk'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.strip().split('\n'):
+                disk_name = line.split()[0] if line.strip() else ''
+                if not disk_name:
+                    continue
+                smart_proc = subprocess.run(
+                    ['smartctl', '-H', '-A', f'/dev/{disk_name}'],
+                    capture_output=True, text=True, timeout=10,
+                )
+                health = 'unknown'
+                if 'PASSED' in (smart_proc.stdout or ''):
+                    health = 'PASSED'
+                elif 'FAILED' in (smart_proc.stdout or ''):
+                    health = 'FAILED'
+                # Parse key SMART attributes
+                reallocated = 0
+                pending = 0
+                for sline in (smart_proc.stdout or '').split('\n'):
+                    if 'Reallocated_Sector' in sline:
+                        parts = sline.split()
+                        if len(parts) >= 10:
+                            try:
+                                reallocated = int(parts[9])
+                            except ValueError:
+                                pass
+                    if 'Current_Pending_Sector' in sline:
+                        parts = sline.split()
+                        if len(parts) >= 10:
+                            try:
+                                pending = int(parts[9])
+                            except ValueError:
+                                pass
+                result['disk_smart'].append({
+                    'disk': disk_name,
+                    'health': health,
+                    'reallocated_sectors': reallocated,
+                    'pending_sectors': pending,
+                })
+    except Exception as e:
+        logger.warning("SMART check failed: %s", e)
+
+    # Recent dmesg errors (disk, memory, hardware)
+    try:
+        proc = subprocess.run(
+            ['dmesg', '--level=err,crit,alert,emerg', '-T'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            for line in proc.stdout.strip().split('\n')[-50:]:  # Last 50 errors
+                for keyword in ['error', 'fail', 'I/O', 'ECC', 'hardware', 'SCSI',
+                                'ata', 'mce', 'NMI', 'Corrected', 'Uncorrected']:
+                    if keyword.lower() in line.lower():
+                        result['dmesg_errors'].append(line.strip()[:300])
+                        break
+    except Exception as e:
+        logger.warning("dmesg check failed: %s", e)
+
+    # CPU power management
+    try:
+        # C-states
+        cstate_path = '/sys/devices/system/cpu/cpu0/cpuidle'
+        if os.path.isdir(cstate_path):
+            cstates = []
+            for d in sorted(os.listdir(cstate_path)):
+                if d.startswith('state'):
+                    name_path = os.path.join(cstate_path, d, 'name')
+                    disable_path = os.path.join(cstate_path, d, 'disable')
+                    name = ''
+                    disabled = False
+                    if os.path.exists(name_path):
+                        with open(name_path) as f:
+                            name = f.read().strip()
+                    if os.path.exists(disable_path):
+                        with open(disable_path) as f:
+                            disabled = f.read().strip() == '1'
+                    cstates.append({'state': d, 'name': name, 'disabled': disabled})
+            result['cpu_power']['cstates'] = cstates
+
+        # Turbo boost
+        turbo_path = '/sys/devices/system/cpu/intel_pstate/no_turbo'
+        if os.path.exists(turbo_path):
+            with open(turbo_path) as f:
+                result['cpu_power']['turbo_disabled'] = f.read().strip() == '1'
+
+        # Governor
+        gov_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+        if os.path.exists(gov_path):
+            with open(gov_path) as f:
+                result['cpu_power']['governor'] = f.read().strip()
+    except Exception as e:
+        logger.warning("CPU power check failed: %s", e)
+
+    # NUMA topology
+    try:
+        node_path = '/sys/devices/system/node'
+        if os.path.isdir(node_path):
+            nodes = [d for d in os.listdir(node_path) if d.startswith('node')]
+            result['numa'] = {
+                'node_count': len(nodes),
+                'balancing_enabled': False,
+            }
+            numa_bal = '/proc/sys/kernel/numa_balancing'
+            if os.path.exists(numa_bal):
+                with open(numa_bal) as f:
+                    result['numa']['balancing_enabled'] = f.read().strip() == '1'
+    except Exception:
+        pass
+
+    # Virtualization detection
+    try:
+        proc = subprocess.run(
+            ['systemd-detect-virt'], capture_output=True, text=True, timeout=5,
+        )
+        virt_type = proc.stdout.strip() if proc.returncode == 0 else 'none'
+        result['virtualization'] = {
+            'type': virt_type,
+            'is_virtual': virt_type != 'none',
+        }
+    except Exception:
+        result['virtualization'] = {'type': 'unknown', 'is_virtual': False}
+
+    return result
+
+
 def collect_hive_metrics(ambari_url, cluster_name, ssl_verify=True, auth=None):
     """
     Collect Hive Server2 and Metastore metrics via JMX and Ambari REST API.

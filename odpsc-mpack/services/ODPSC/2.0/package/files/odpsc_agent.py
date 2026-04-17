@@ -44,6 +44,9 @@ from collectors import (
     collect_spark_metrics,
     collect_oozie_metrics,
     collect_solr_metrics,
+    collect_knox_metrics,
+    collect_livy_metrics,
+    collect_infra_diagnostics,
 )
 from benchmarks import run_all_benchmarks
 
@@ -838,7 +841,8 @@ def create_bundle(data, bundle_id, level, dest_dir):
                          'kudu_metrics', 'hive_metrics', 'zookeeper_metrics',
                          'atlas_metrics', 'ranger_metrics', 'nifi_metrics',
                          'kafka_metrics', 'spark_metrics', 'oozie_metrics',
-                         'solr_metrics'):
+                         'solr_metrics', 'knox_metrics', 'livy_metrics',
+                         'infra_diagnostics'):
                 if key in data and data[key]:
                     filename = f'{key}.json'
                     zf.writestr(filename, json.dumps(data[key], indent=2))
@@ -1004,6 +1008,9 @@ def run_collection(config, level=None):
             data['spark_metrics'] = collect_spark_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
             data['oozie_metrics'] = collect_oozie_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
             data['solr_metrics'] = collect_solr_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['knox_metrics'] = collect_knox_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['livy_metrics'] = collect_livy_metrics(ambari_url, cluster_name, ssl_verify=ssl_verify, auth=ambari_auth)
+            data['infra_diagnostics'] = collect_infra_diagnostics()
 
             # Hardware benchmarks (CPU, memory, disk, network)
             if config.get('benchmarks_enabled', True):
