@@ -4,3 +4,5 @@ psutil>=5.8,<6.0
 cryptography>=3.4,<43.0
 gunicorn>=21.0,<23.0
 bcrypt>=4.0,<5.0
+# Optional — only needed when streaming.enabled=true in the agent config.
+pulsar-client>=3.4.0,<4.0; python_version >= "3.8"

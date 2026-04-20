@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -49,6 +50,7 @@ from collectors import (
     collect_infra_diagnostics,
 )
 from benchmarks import run_all_benchmarks
+from pulsar_streamer import build_from_config as build_streamer
 
 LOG_DIR = '/var/log/odpsc'
 CONFIG_PATH = '/etc/odpsc/agent_config.json'
@@ -91,6 +93,14 @@ DEFAULT_CONFIG = {
     'ambari_ssl_verify': True,
     'ambari_username': 'admin',
     'ambari_password': '',
+    'streaming': {
+        'enabled': False,
+        'pulsar_service_url': '',
+        'pulsar_tenant': 'supportplane',
+        'tenant_namespace': 'default',
+        'interval_seconds': 15,
+        'log_tail_bytes': 16384,
+    },
 }
 
 # Sensitive data patterns for masking
@@ -1195,6 +1205,154 @@ def cleanup_sent(max_age_days=SENT_CLEANUP_DAYS):
         logger.info("Cleaned up %d sent bundle(s) older than %d days", removed, max_age_days)
 
 
+def _flatten_system_metrics(raw):
+    """Convert the nested collect_metrics() output into a flat name->float dict."""
+    out = {}
+    sys_block = (raw or {}).get('system', {})
+    for key in ('cpu_percent', 'cpu_count'):
+        val = sys_block.get(key)
+        if isinstance(val, (int, float)):
+            out[key] = float(val)
+    mem = sys_block.get('memory') or {}
+    for key in ('percent', 'available', 'total', 'used'):
+        val = mem.get(key)
+        if isinstance(val, (int, float)):
+            out[f'memory_{key}'] = float(val)
+    swap = sys_block.get('swap') or {}
+    for key in ('percent', 'used'):
+        val = swap.get(key)
+        if isinstance(val, (int, float)):
+            out[f'swap_{key}'] = float(val)
+    load_avg = sys_block.get('load_avg')
+    if isinstance(load_avg, (list, tuple)) and len(load_avg) >= 3:
+        out['load_avg_1m'] = float(load_avg[0])
+        out['load_avg_5m'] = float(load_avg[1])
+        out['load_avg_15m'] = float(load_avg[2])
+    return out
+
+
+def _tail_log_lines(path, max_bytes):
+    try:
+        with open(path, 'r', errors='replace') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - max_bytes)
+            f.seek(start)
+            return f.read().splitlines()
+    except (IOError, OSError):
+        return []
+
+
+def _classify_line(line):
+    if 'ERROR' in line or 'FATAL' in line or 'Exception' in line:
+        return 'ERROR'
+    if 'WARN' in line:
+        return 'WARN'
+    return None
+
+
+def _guess_service(path):
+    lower = path.lower()
+    for needle, svc in (
+        ('namenode', 'HDFS'), ('datanode', 'HDFS'),
+        ('resourcemanager', 'YARN'), ('nodemanager', 'YARN'),
+        ('regionserver', 'HBase'), ('hbase', 'HBase'),
+        ('hive', 'Hive'), ('kafka', 'Kafka'),
+        ('zookeeper', 'ZooKeeper'), ('impala', 'Impala'),
+        ('spark', 'Spark'),
+    ):
+        if needle in lower:
+            return svc
+    return 'Other'
+
+
+def run_stream(config):
+    """
+    Continuous streaming mode: publish metrics every N seconds and push
+    new ERROR/WARN log lines to Pulsar. Blocks until SIGINT/SIGTERM.
+    """
+    import signal
+
+    streamer = build_streamer(config)
+    if streamer is None:
+        logger.warning("Streaming not enabled in config (streaming.enabled=false) — nothing to do")
+        return 1
+    if not streamer.connect():
+        logger.error("Failed to connect Pulsar streamer")
+        return 2
+
+    stop_event = threading.Event()
+    def _shutdown(_signum, _frame):
+        logger.info("Shutdown signal received, closing streamer")
+        stop_event.set()
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    interval = int(config['streaming'].get('interval_seconds', 15))
+    log_tail_bytes = int(config['streaming'].get('log_tail_bytes', 16384))
+    log_patterns = config.get('log_paths', [])
+    seen_offsets = {}
+
+    logger.info("Streaming loop started (interval=%ds, tail=%dB)", interval, log_tail_bytes)
+    try:
+        while not stop_event.is_set():
+            try:
+                raw = collect_metrics(
+                    ambari_server_url=config.get('ambari_server_url'),
+                    cluster_name=config.get('cluster_name'),
+                    ssl_verify=config.get('ambari_ssl_verify', True),
+                )
+                flat = _flatten_system_metrics(raw)
+                if flat:
+                    streamer.publish_host_metrics(flat)
+            except Exception as e:
+                logger.warning("Metric publish iteration failed: %s", e)
+
+            try:
+                for pattern in log_patterns:
+                    for path in glob.glob(pattern):
+                        if not os.path.isfile(path):
+                            continue
+                        offset = seen_offsets.get(path, 0)
+                        try:
+                            size = os.path.getsize(path)
+                        except OSError:
+                            continue
+                        if size < offset:
+                            offset = 0  # log rotated
+                        if size - offset < 32:
+                            seen_offsets[path] = size
+                            continue
+                        start = max(offset, size - log_tail_bytes)
+                        try:
+                            with open(path, 'r', errors='replace') as f:
+                                f.seek(start)
+                                chunk = f.read()
+                        except (IOError, OSError):
+                            continue
+                        seen_offsets[path] = size
+
+                        errors, warns = [], []
+                        for line in chunk.splitlines():
+                            lvl = _classify_line(line)
+                            if lvl == 'ERROR':
+                                errors.append(line)
+                            elif lvl == 'WARN':
+                                warns.append(line)
+                        service = _guess_service(path)
+                        if errors:
+                            streamer.publish_log_tail(service, 'ERROR', errors)
+                        if warns:
+                            streamer.publish_log_tail(service, 'WARN', warns)
+            except Exception as e:
+                logger.warning("Log publish iteration failed: %s", e)
+
+            stop_event.wait(interval)
+    finally:
+        streamer.close()
+    return 0
+
+
 def main():
     """Main entry point for the ODPSC Agent v2."""
     parser = argparse.ArgumentParser(description='ODPSC Agent v2 - Diagnostic collection agent')
@@ -1215,12 +1373,20 @@ def main():
         help='Clean up old sent bundles',
     )
     parser.add_argument(
+        '--stream', action='store_true',
+        help='Run continuous streaming loop (blocks). Requires streaming.enabled=true in config.',
+    )
+    parser.add_argument(
         '--config', default=CONFIG_PATH,
         help='Path to agent configuration file',
     )
 
     args = parser.parse_args()
     config = load_config(args.config)
+
+    if args.stream:
+        # Streaming is a long-lived blocking mode. Don't mix with one-shot actions.
+        sys.exit(run_stream(config))
 
     if not any([args.collect, args.retry, args.cleanup]):
         # Default: collect and retry
